@@ -8,7 +8,7 @@ if(DISABLE_VST)
 	return()
 endif()
 
-cmake_minimum_required(VERSION 3.24...3.25)
+cmake_minimum_required(VERSION 3.5)
 
 project(obs-vst C CXX)
 
