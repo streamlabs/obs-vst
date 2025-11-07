@@ -23,7 +23,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define BLOCK_SIZE 512
 
 #ifdef WIN32
-#define NOMINMAX
 #include <Windows.h>
 #endif
 
