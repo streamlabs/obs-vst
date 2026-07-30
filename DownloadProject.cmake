@@ -162,6 +162,7 @@ function(download_project)
                    "${DL_ARGS_DOWNLOAD_DIR}/CMakeLists.txt")
     execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}"
                         -D "CMAKE_MAKE_PROGRAM:FILE=${CMAKE_MAKE_PROGRAM}"
+                        -D "CMAKE_SUPPRESS_REGENERATION:BOOL=ON"
                         .
                     RESULT_VARIABLE result
                     ${OUTPUT_QUIET}

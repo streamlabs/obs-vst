@@ -155,19 +155,28 @@ if(WIN32)
 		include(ExternalProject)
 		include(DownloadProject.cmake)
 
-		# Select the latest crashpad release files
-		if(WIN32)
-			download_project(
-				PROJ crashpad
-				URL https://obsstudionodes3.streamlabs.com/crashpad/crashpad-release-win-bd479a12-dec-2022-x86_64.tar.gz
-				UPDATE_DISCONNECTED 1
-			)
-		elseif(APPLE)
-			download_project(
-				PROJ crashpad
-				URL https://obsstudionodes3.streamlabs.com/crashpad/crashpad-release-osx-bd479a12-jan-2023-x86_64.zip
-				UPDATE_DISCONNECTED 1
-			)
+		set(_crashpad_source_dir "${CMAKE_BINARY_DIR}/crashpad-src")
+		if(EXISTS "${_crashpad_source_dir}/include/client/crashpad_client.h"
+			AND EXISTS "${_crashpad_source_dir}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}base${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			AND EXISTS "${_crashpad_source_dir}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}client${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			AND EXISTS "${_crashpad_source_dir}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}common${CMAKE_STATIC_LIBRARY_SUFFIX}"
+			AND EXISTS "${_crashpad_source_dir}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}util${CMAKE_STATIC_LIBRARY_SUFFIX}")
+			set(crashpad_SOURCE_DIR "${_crashpad_source_dir}")
+		else()
+			# Select the latest crashpad release files
+			if(WIN32)
+				download_project(
+					PROJ crashpad
+					URL https://obsstudionodes3.streamlabs.com/crashpad/crashpad-release-win-bd479a12-dec-2022-x86_64.tar.gz
+					UPDATE_DISCONNECTED 1
+				)
+			elseif(APPLE)
+				download_project(
+					PROJ crashpad
+					URL https://obsstudionodes3.streamlabs.com/crashpad/crashpad-release-osx-bd479a12-jan-2023-x86_64.zip
+					UPDATE_DISCONNECTED 1
+				)
+			endif()
 		endif()
 
 		ExternalProject_Add(

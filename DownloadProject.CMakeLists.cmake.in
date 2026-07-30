@@ -5,9 +5,12 @@ cmake_minimum_required(VERSION 3.5.0)
 
 project(${DL_ARGS_PROJ}-download NONE)
 
+set(CMAKE_SUPPRESS_REGENERATION ON)
+
 include(ExternalProject)
 ExternalProject_Add(${DL_ARGS_PROJ}-download
                     ${DL_ARGS_UNPARSED_ARGUMENTS}
+                    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
                     SOURCE_DIR          "${DL_ARGS_SOURCE_DIR}"
                     BINARY_DIR          "${DL_ARGS_BINARY_DIR}"
                     CONFIGURE_COMMAND   ""

@@ -21,7 +21,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <obs_vst_api.grpc.pb.h>
 
 #include <util/platform.h>
-#define NOMINMAX
 #include <windows.h>
 #include <string>
 #include <grpcpp/grpcpp.h>
