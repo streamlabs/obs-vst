@@ -120,6 +120,8 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 
 bool VSTPlugin::verifyProxy(const bool notifyAudioPause /*= false*/)
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (m_effect == nullptr)
 		return false;
 
@@ -164,7 +166,8 @@ void silenceChannel(float **channelData, int numChannels, long numFrames)
 
 obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 {
-	if (!m_effectStatusMutex.try_lock())
+	std::unique_lock<std::recursive_mutex> lock(m_effectStatusMutex, std::try_to_lock);
+	if (!lock.owns_lock())
 		return audio;
 
 	if (m_effect != nullptr && m_remote != nullptr) {
@@ -186,10 +189,8 @@ obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 
 			m_remote->processReplacing(m_effect.get(), adata, m_outputs, frames, VST_MAX_CHANNELS);
 
-			if (!verifyProxy(true)) {
-				m_effectStatusMutex.unlock();
+			if (!verifyProxy(true))
 				return audio;
-			}
 
 			for (size_t c = 0; c < VST_MAX_CHANNELS; c++) {
 				if (audio->data[c] != nullptr) {
@@ -200,7 +201,6 @@ obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 		}
 	}
 
-	m_effectStatusMutex.unlock();
 	return audio;
 }
 
@@ -235,6 +235,8 @@ bool VSTPlugin::hasWindowOpen()
 
 void VSTPlugin::openEditor()
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (isProxyDisconnected())
 		return;
 
@@ -253,6 +255,8 @@ void VSTPlugin::openEditor()
 
 void VSTPlugin::hideEditor()
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (isProxyDisconnected())
 		return;
 
@@ -266,6 +270,8 @@ void VSTPlugin::hideEditor()
 
 void VSTPlugin::closeEditor()
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	m_is_open = false;
 
 	if (m_windowCreated && m_effect != nullptr && m_remote != nullptr) {
@@ -278,6 +284,8 @@ void VSTPlugin::closeEditor()
 
 std::string VSTPlugin::getChunk(VstChunkType type)
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	cbase64_encodestate encoder;
 	std::string encodedData;
 
@@ -338,6 +346,8 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 
 void VSTPlugin::setChunk(VstChunkType type, std::string &data)
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (data.size() == 0) {
 		blog(LOG_DEBUG, "VST Plug-in: setChunk with empty data chunk ignored");
 		return;
@@ -381,6 +391,8 @@ void VSTPlugin::setChunk(VstChunkType type, std::string &data)
 
 void VSTPlugin::setProgram(const int programNumber)
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (m_effect == nullptr || m_remote == nullptr) {
 		blog(LOG_ERROR, "VST Plug-in: setProgram effect is not ready yet");
 		return;
@@ -398,6 +410,8 @@ void VSTPlugin::setProgram(const int programNumber)
 
 int VSTPlugin::getProgram()
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (m_effect == nullptr || m_remote == nullptr) {
 		blog(LOG_WARNING, "VST Plug-in: getProgram effect is not ready yet");
 		return 0;

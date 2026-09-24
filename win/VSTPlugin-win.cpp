@@ -116,6 +116,8 @@ int32_t VSTPlugin::chooseProxyPort()
 
 void VSTPlugin::stopProxy()
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (m_effect == nullptr)
 		return;
 
