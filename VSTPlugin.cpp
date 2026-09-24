@@ -76,10 +76,10 @@ VSTPlugin::~VSTPlugin()
 
 void VSTPlugin::loadEffectFromPath(std::string path)
 {
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+
 	if (m_proxyDisconnected || m_effect != nullptr)
 		return;
-
-	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
 
 	blog(LOG_DEBUG, "VST Plug-in: loadEffectFromPath from pluginPath %s ", path.c_str());
 	m_pluginPath = path;
@@ -218,6 +218,12 @@ void VSTPlugin::unloadEffect()
 	}
 
 	stopProxy();
+}
+
+bool VSTPlugin::hasEffect()
+{
+	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+	return m_effect != nullptr;
 }
 
 bool VSTPlugin::isEditorOpen()

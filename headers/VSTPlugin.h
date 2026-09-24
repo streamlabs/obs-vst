@@ -61,6 +61,7 @@ public:
 
 	AEffect *loadEffect();
 	AEffect *getEffect() const { return m_effect.get(); }
+	bool hasEffect();
 
 	obs_audio_data *process(struct obs_audio_data *audio);
 
