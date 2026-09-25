@@ -173,9 +173,9 @@ bool VSTPlugin::verifyProxyLocked()
 				" has stopped working.\n\nThe filter has been disabled. You may restart the application or recreate the filter to enable it again.");
 
 			const uint64_t generation = m_loadGeneration;
+			auto teardownStartState = std::make_shared<std::atomic<int>>(0);
 			m_pendingTeardowns.fetch_add(1, std::memory_order_relaxed);
 			std::thread teardownThread;
-			auto teardownStartState = std::make_shared<std::atomic<int>>(0);
 			try {
 				teardownThread = std::thread([this, generation, teardownStartState]() {
 					for (;;) {
@@ -196,8 +196,8 @@ bool VSTPlugin::verifyProxyLocked()
 					}
 					m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
 				});
-				teardownStartState->store(1, std::memory_order_release);
 				teardownThread.detach();
+				teardownStartState->store(1, std::memory_order_release);
 			} catch (...) {
 				if (teardownThread.joinable()) {
 					teardownStartState->store(2, std::memory_order_release);
