@@ -132,7 +132,15 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
-	std::thread([msg = std::move(msg)]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }).detach();
+	std::thread popupThread;
+	try {
+		popupThread = std::thread([msg = std::move(msg)]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); });
+		popupThread.detach();
+	} catch (const std::exception &e) {
+		if (popupThread.joinable())
+			popupThread.join();
+		blog(LOG_ERROR, "VST Plug-in: unable to show error popup asynchronously: %s", e.what());
+	}
 #else
 	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
 #endif
