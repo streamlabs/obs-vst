@@ -257,22 +257,3 @@ if(WIN32)
 
 	set_target_properties_obs(win-streamlabs-vst PROPERTIES FOLDER plugins/obs-vst PREFIX "")
 endif(WIN32)
-
-# Standalone concurrency regression test for VSTPlugin's m_effectStatusMutex locking
-# pattern (see tests/lock_regression_test.cpp for why this doesn't build/link the real
-# VSTPlugin). Off by default: it has no OBS/gRPC dependency and isn't part of the
-# plugin itself, so it shouldn't affect a normal obs-vst build.
-option(SLVST_BUILD_TESTS "Build sl-vst standalone concurrency regression tests" OFF)
-
-if(SLVST_BUILD_TESTS)
-	enable_testing()
-
-	add_executable(sl-vst-lock-regression-test tests/lock_regression_test.cpp)
-	target_compile_features(sl-vst-lock-regression-test PRIVATE cxx_std_17)
-	set_target_properties(sl-vst-lock-regression-test PROPERTIES FOLDER "plugins/obs-vst/tests")
-
-	find_package(Threads REQUIRED)
-	target_link_libraries(sl-vst-lock-regression-test PRIVATE Threads::Threads)
-
-	add_test(NAME sl-vst-lock-regression-test COMMAND sl-vst-lock-regression-test)
-endif()

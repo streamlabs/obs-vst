@@ -108,6 +108,7 @@ private:
 	// stops the proxy if this still matches the value it captured, so it can't kill
 	// a newer proxy that was loaded after the disconnect was detected.
 	uint64_t m_loadGeneration{0};
+	std::atomic<bool> m_shuttingDown{false};
 
 	std::unique_ptr<AEffect> m_effect;
 

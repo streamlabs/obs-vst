@@ -26,6 +26,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "cbase64.h"
 #ifdef WIN32
 #include <cstringt.h>
+#include <windows.h>
 #endif
 #include <functional>
 #include <filesystem>
@@ -50,6 +51,11 @@ VSTPlugin::VSTPlugin(obs_source_t *sourceContext) : m_sourceContext{sourceContex
 
 VSTPlugin::~VSTPlugin()
 {
+	{
+		std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+		m_shuttingDown.store(true, std::memory_order_release);
+	}
+
 	while (m_pendingTeardowns.load(std::memory_order_acquire) != 0)
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
@@ -99,7 +105,7 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 
 	// Check plug-in's magic number
 	// If incorrect, then the file either was not loaded properly, is not a real VST plug-in, or is otherwise corrupt.
-	if (m_effect->magic != kEffectMagic) {
+	if (m_remote->getEffectMagic() != kEffectMagic) {
 		blog(LOG_WARNING, "VST Plug-in: loadEffectFromPath magic number is bad");
 		return;
 	}
@@ -126,9 +132,7 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
-	std::thread([msg = std::move(msg)]() {
-		::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL);
-	}).detach();
+	std::thread([msg = std::move(msg)]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }).detach();
 #else
 	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
 #endif
@@ -144,7 +148,7 @@ bool VSTPlugin::verifyProxy()
 // it itself.
 bool VSTPlugin::verifyProxyLocked()
 {
-	if (m_effect == nullptr)
+	if (m_shuttingDown.load(std::memory_order_acquire) || m_effect == nullptr)
 		return false;
 
 	if (m_proxyDisconnected)
@@ -156,19 +160,44 @@ bool VSTPlugin::verifyProxyLocked()
 
 		bool expected = false;
 		if (m_proxyDisconnected.compare_exchange_strong(expected, true)) {
-			showErrorPopupAsync(std::filesystem::path(m_pluginPath).filename().string() +
-					    " has stopped working.\n\nThe filter has been disabled. You may restart the application or recreate the filter to enable it again.");
+			showErrorPopupAsync(
+				std::filesystem::path(m_pluginPath).filename().string() +
+				" has stopped working.\n\nThe filter has been disabled. You may restart the application or recreate the filter to enable it again.");
 
 			const uint64_t generation = m_loadGeneration;
 			m_pendingTeardowns.fetch_add(1, std::memory_order_relaxed);
-			std::thread([this, generation]() {
-				{
-					std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
-					if (m_loadGeneration == generation)
-						stopProxy();
+			std::thread teardownThread;
+			auto teardownStartState = std::make_shared<std::atomic<int>>(0);
+			try {
+				teardownThread = std::thread([this, generation, teardownStartState]() {
+					for (;;) {
+						const int startState = teardownStartState->load(std::memory_order_acquire);
+						if (startState == 1)
+							break;
+						if (startState == 2)
+							return;
+						std::this_thread::yield();
+					}
+
+					try {
+						std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+						if (m_loadGeneration == generation)
+							stopProxy();
+					} catch (...) {
+						blog(LOG_ERROR, "VST Plug-in: deferred proxy teardown failed");
+					}
+					m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
+				});
+				teardownStartState->store(1, std::memory_order_release);
+				teardownThread.detach();
+			} catch (...) {
+				if (teardownThread.joinable()) {
+					teardownStartState->store(2, std::memory_order_release);
+					teardownThread.join();
 				}
 				m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
-			}).detach();
+				throw;
+			}
 		}
 
 		return false;
@@ -334,7 +363,8 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 
 	cbase64_init_encodestate(&encoder);
 
-	if (m_effect->flags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
+	const int effectFlags = m_remote->getEffectFlags();
+	if (effectFlags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
 		void *buf = nullptr;
 		intptr_t chunkSize = m_remote->dispatcher(m_effect.get(), effGetChunk, int(type), 0, &buf, 0.0, 0);
 
@@ -351,10 +381,11 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 		int blockEnd = cbase64_encode_block((const unsigned char *)buf, uint32_t(chunkSize), &encodedData[0], &encoder);
 		cbase64_encode_blockend(&encodedData[blockEnd], &encoder);
 		return encodedData;
-	} else if (!(m_effect->flags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
+	} else if (!(effectFlags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
 		std::vector<float> params;
+		const int numParams = m_remote->getEffectNumParams();
 
-		for (int i = 0; i < m_effect->numParams; i++) {
+		for (int i = 0; i < numParams; i++) {
 			float parameter = m_remote->getParameter(m_effect.get(), i);
 			params.push_back(parameter);
 		}
@@ -405,24 +436,27 @@ void VSTPlugin::setChunk(VstChunkType type, std::string &data)
 	cbase64_decode_block(data.data(), uint32_t(data.size()), (unsigned char *)&decodedData[0], &decoder);
 	data = "";
 
-	if (m_effect->flags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
+	const int effectFlags = m_remote->getEffectFlags();
+	if (effectFlags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
 		auto ret = m_remote->dispatcher(m_effect.get(), effSetChunk, type == VstChunkType::Bank ? 0 : 1, decodedData.length(), &decodedData[0], 0.0,
 						decodedData.length());
-	} else if (!(m_effect->flags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
+	} else if (!(effectFlags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
 		const char *p_chars = &decodedData[0];
 		const float *p_floats = reinterpret_cast<const float *>(p_chars);
 
 		int size = uint32_t(decodedData.length()) / sizeof(float);
 
 		std::vector<float> params(p_floats, p_floats + size);
+		const int numParams = m_remote->getEffectNumParams();
 
-		if (params.size() != (size_t)m_effect->numParams) {
+		if (params.size() != (size_t)numParams) {
 			blog(LOG_WARNING, "VST Plug-in: setChunk wrong number of params");
 			return;
 		}
 
-		// Bound by params.size(), not m_effect->numParams: every RPC reply (including
-		// these setParameter calls and a concurrent processReplacing) rewrites numParams.
+		// Bound by params.size(), not numParams: every RPC reply (including these
+		// setParameter calls and a concurrent processReplacing) refreshes the cached
+		// metadata.
 		for (size_t i = 0; i < params.size(); i++)
 			m_remote->setParameter(m_effect.get(), int(i), params[i]);
 	}
@@ -440,7 +474,7 @@ void VSTPlugin::setProgram(const int programNumber)
 		return;
 	}
 
-	if (programNumber < m_effect->numPrograms) {
+	if (programNumber >= 0 && programNumber < m_remote->getEffectNumPrograms()) {
 		intptr_t ret = m_remote->dispatcher(m_effect.get(), effSetProgram, 0, programNumber, nullptr, 0.0f, 0);
 		blog(LOG_ERROR, "VST Plug-in: setProgram get %lld from effSetProgram", ret);
 	} else {
