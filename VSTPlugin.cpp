@@ -132,14 +132,10 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
-	std::thread popupThread;
 	try {
-		popupThread = std::thread([msg = std::move(msg)]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); });
-		popupThread.detach();
+		std::thread([msg]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }).detach();
 	} catch (const std::exception &e) {
-		if (popupThread.joinable())
-			popupThread.join();
-		blog(LOG_ERROR, "VST Plug-in: unable to show error popup asynchronously: %s", e.what());
+		blog(LOG_ERROR, "VST Plug-in: unable to show error popup (%s): %s", e.what(), msg.c_str());
 	}
 #else
 	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
@@ -173,20 +169,9 @@ bool VSTPlugin::verifyProxyLocked()
 				" has stopped working.\n\nThe filter has been disabled. You may restart the application or recreate the filter to enable it again.");
 
 			const uint64_t generation = m_loadGeneration;
-			auto teardownStartState = std::make_shared<std::atomic<int>>(0);
 			m_pendingTeardowns.fetch_add(1, std::memory_order_relaxed);
-			std::thread teardownThread;
 			try {
-				teardownThread = std::thread([this, generation, teardownStartState]() {
-					for (;;) {
-						const int startState = teardownStartState->load(std::memory_order_acquire);
-						if (startState == 1)
-							break;
-						if (startState == 2)
-							return;
-						std::this_thread::yield();
-					}
-
+				std::thread([this, generation]() {
 					try {
 						std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
 						if (m_loadGeneration == generation)
@@ -195,16 +180,13 @@ bool VSTPlugin::verifyProxyLocked()
 						blog(LOG_ERROR, "VST Plug-in: deferred proxy teardown failed");
 					}
 					m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
-				});
-				teardownThread.detach();
-				teardownStartState->store(1, std::memory_order_release);
-			} catch (...) {
-				if (teardownThread.joinable()) {
-					teardownStartState->store(2, std::memory_order_release);
-					teardownThread.join();
-				}
+				}).detach();
+			} catch (const std::exception &e) {
+				// Only the std::thread constructor can throw here, in which case the body
+				// never runs. Don't rethrow: this can be called from the audio thread, and
+				// the proxy is still cleaned up by the next unloadEffect().
 				m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
-				throw;
+				blog(LOG_ERROR, "VST Plug-in: unable to start deferred proxy teardown: %s", e.what());
 			}
 		}
 
