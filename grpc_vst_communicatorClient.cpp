@@ -3,9 +3,23 @@
 
 #include <aeffectx.h>
 
+namespace {
+template<typename Reply> grpc_vst_communicatorClient::EffectMetadata GetEffectMetadata(const Reply &reply)
+{
+	return {reply.magic(), reply.numprograms(),  reply.numparams(), reply.numinputs(), reply.numoutputs(),
+		reply.flags(), reply.initialdelay(), reply.uniqueid(),  reply.version()};
+}
+} // namespace
+
 grpc_vst_communicatorClient::grpc_vst_communicatorClient(std::shared_ptr<Channel> channel) : stub_(grpc_vst_communicator::NewStub(channel))
 {
 	m_connected = channel->WaitForConnected(std::chrono::system_clock::now() + std::chrono::seconds(3));
+}
+
+void grpc_vst_communicatorClient::syncEffectMetadata(const EffectMetadata &metadata)
+{
+	std::lock_guard<std::mutex> lock(m_effectMetadataMutex);
+	m_effectMetadata = metadata;
 }
 
 intptr_t grpc_vst_communicatorClient::dispatcher(AEffect *a, int b, int c, intptr_t d, void *ptr, float f, size_t ptr_size)
@@ -50,15 +64,7 @@ intptr_t grpc_vst_communicatorClient::dispatcher(AEffect *a, int b, int c, intpt
 		}
 	}
 
-	a->magic = reply.magic();
-	a->numPrograms = reply.numprograms();
-	a->numParams = reply.numparams();
-	a->numInputs = reply.numinputs();
-	a->numOutputs = reply.numoutputs();
-	a->flags = reply.flags();
-	a->initialDelay = reply.initialdelay();
-	a->uniqueID = reply.uniqueid();
-	a->version = reply.version();
+	syncEffectMetadata(GetEffectMetadata(reply));
 
 	return reply.returnval();
 }
@@ -76,15 +82,7 @@ void grpc_vst_communicatorClient::setParameter(AEffect *a, int b, float c)
 	if (!status.ok())
 		m_connected = false;
 
-	a->magic = reply.magic();
-	a->numPrograms = reply.numprograms();
-	a->numParams = reply.numparams();
-	a->numInputs = reply.numinputs();
-	a->numOutputs = reply.numoutputs();
-	a->flags = reply.flags();
-	a->initialDelay = reply.initialdelay();
-	a->uniqueID = reply.uniqueid();
-	a->version = reply.version();
+	syncEffectMetadata(GetEffectMetadata(reply));
 }
 
 float grpc_vst_communicatorClient::getParameter(AEffect *a, int b)
@@ -99,15 +97,7 @@ float grpc_vst_communicatorClient::getParameter(AEffect *a, int b)
 	if (!status.ok())
 		m_connected = false;
 
-	a->magic = reply.magic();
-	a->numPrograms = reply.numprograms();
-	a->numParams = reply.numparams();
-	a->numInputs = reply.numinputs();
-	a->numOutputs = reply.numoutputs();
-	a->flags = reply.flags();
-	a->initialDelay = reply.initialdelay();
-	a->uniqueID = reply.uniqueid();
-	a->version = reply.version();
+	syncEffectMetadata(GetEffectMetadata(reply));
 	return reply.returnval();
 }
 
@@ -142,15 +132,7 @@ void grpc_vst_communicatorClient::processReplacing(AEffect *a, float **adata, fl
 		StlBuffer::pop_buffer(reply.bdata(), read_idx_b, (char *)bdata[c], frames * sizeof(float));
 	}
 
-	a->magic = reply.magic();
-	a->numPrograms = reply.numprograms();
-	a->numParams = reply.numparams();
-	a->numInputs = reply.numinputs();
-	a->numOutputs = reply.numoutputs();
-	a->flags = reply.flags();
-	a->initialDelay = reply.initialdelay();
-	a->uniqueID = reply.uniqueid();
-	a->version = reply.version();
+	syncEffectMetadata(GetEffectMetadata(reply));
 }
 
 void grpc_vst_communicatorClient::sendHwndMsg(AEffect * /*a*/, int msgType)
@@ -178,15 +160,31 @@ void grpc_vst_communicatorClient::updateAEffect(AEffect *a)
 	if (!status.ok())
 		m_connected = false;
 
-	a->magic = reply.magic();
-	a->numPrograms = reply.numprograms();
-	a->numParams = reply.numparams();
-	a->numInputs = reply.numinputs();
-	a->numOutputs = reply.numoutputs();
-	a->flags = reply.flags();
-	a->initialDelay = reply.initialdelay();
-	a->uniqueID = reply.uniqueid();
-	a->version = reply.version();
+	syncEffectMetadata(GetEffectMetadata(reply));
+}
+
+int grpc_vst_communicatorClient::getEffectMagic() const
+{
+	std::lock_guard<std::mutex> lock(m_effectMetadataMutex);
+	return m_effectMetadata.magic;
+}
+
+int grpc_vst_communicatorClient::getEffectFlags() const
+{
+	std::lock_guard<std::mutex> lock(m_effectMetadataMutex);
+	return m_effectMetadata.flags;
+}
+
+int grpc_vst_communicatorClient::getEffectNumParams() const
+{
+	std::lock_guard<std::mutex> lock(m_effectMetadataMutex);
+	return m_effectMetadata.numParams;
+}
+
+int grpc_vst_communicatorClient::getEffectNumPrograms() const
+{
+	std::lock_guard<std::mutex> lock(m_effectMetadataMutex);
+	return m_effectMetadata.numPrograms;
 }
 
 void grpc_vst_communicatorClient::stopServer(AEffect * /*a*/)

@@ -99,7 +99,7 @@ static void vst_update(void *data, obs_data_t *settings)
 
 	if (!vstPlugin->isProxyDisconnected()) {
 		// Load VST plugin only when creating the filter or when changing plugin
-		if (vstPlugin->getPluginPath() != std::string(path) || vstPlugin->getEffect() == nullptr)
+		if (vstPlugin->getPluginPath() != std::string(path) || !vstPlugin->hasEffect())
 			load_vst = true;
 	}
 

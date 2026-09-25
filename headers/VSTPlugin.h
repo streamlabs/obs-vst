@@ -31,6 +31,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "aeffectx.h"
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
+#include <atomic>
 #include <memory>
 
 class grpc_vst_communicatorClient;
@@ -56,11 +58,11 @@ public:
 
 	bool isEditorOpen();
 	bool hasWindowOpen();
-	bool verifyProxy(const bool notifyAudioPause = false);
+	bool verifyProxy();
 	bool isProxyDisconnected() const { return m_proxyDisconnected; }
 
 	AEffect *loadEffect();
-	AEffect *getEffect() const { return m_effect.get(); }
+	bool hasEffect();
 
 	obs_audio_data *process(struct obs_audio_data *audio);
 
@@ -71,6 +73,11 @@ public:
 
 private:
 	void stopProxy();
+	void unloadEffectLocked();
+	void openEditorLocked();
+	bool verifyProxyLocked();
+
+	static void showErrorPopupAsync(std::string msg);
 
 	int32_t chooseProxyPort();
 
@@ -88,7 +95,41 @@ private:
 	std::string m_sourceName;
 	std::string m_filterName;
 
-	std::recursive_mutex m_effectStatusMutex;
+	std::shared_mutex m_effectStatusMutex;
+	std::atomic<std::thread::id> m_exclusiveOwner{};
+
+	// Takes m_effectStatusMutex exclusively and records the owning thread. Use this
+	// so we can track whether the caller holds the lock and warn if not.
+	class ExclusiveLock {
+	public:
+		explicit ExclusiveLock(VSTPlugin &plugin) : m_plugin(plugin), m_lock(plugin.m_effectStatusMutex)
+		{
+			m_plugin.m_exclusiveOwner.store(std::this_thread::get_id(), std::memory_order_relaxed);
+		}
+		~ExclusiveLock() { m_plugin.m_exclusiveOwner.store(std::thread::id{}, std::memory_order_relaxed); }
+
+		ExclusiveLock(const ExclusiveLock &) = delete;
+		ExclusiveLock &operator=(const ExclusiveLock &) = delete;
+
+	private:
+		VSTPlugin &m_plugin;
+		std::unique_lock<std::shared_mutex> m_lock;
+	};
+
+	bool holdsExclusiveLock() const { return m_exclusiveOwner.load(std::memory_order_relaxed) == std::this_thread::get_id(); }
+	void warnIfNotExclusivelyLocked(const char *func) const;
+
+	// Counts deferred teardown threads spawned by verifyProxy() that are still
+	// running. The destructor spins until this reaches zero before tearing down
+	// the object, so a detached teardown thread can never touch `this` after it
+	// has been deleted.
+	std::atomic<int> m_pendingTeardowns{0};
+
+	// Bumped on every load (under the exclusive lock). A deferred teardown only
+	// stops the proxy if this still matches the value it captured, so it can't kill
+	// a newer proxy that was loaded after the disconnect was detected.
+	uint64_t m_loadGeneration{0};
+	std::atomic<bool> m_shuttingDown{false};
 
 	std::unique_ptr<AEffect> m_effect;
 
