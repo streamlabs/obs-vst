@@ -117,6 +117,8 @@ int32_t VSTPlugin::chooseProxyPort()
 // this). std::shared_mutex is not recursive, so this must not lock it again.
 void VSTPlugin::stopProxy()
 {
+	warnIfNotExclusivelyLocked(__func__);
+
 	if (m_effect == nullptr)
 		return;
 

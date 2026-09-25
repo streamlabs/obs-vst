@@ -96,6 +96,28 @@ private:
 	std::string m_filterName;
 
 	std::shared_mutex m_effectStatusMutex;
+	std::atomic<std::thread::id> m_exclusiveOwner{};
+
+	// Takes m_effectStatusMutex exclusively and records the owning thread. Use this
+	// so we can track whether the caller holds the lock and warn if not.
+	class ExclusiveLock {
+	public:
+		explicit ExclusiveLock(VSTPlugin &plugin) : m_plugin(plugin), m_lock(plugin.m_effectStatusMutex)
+		{
+			m_plugin.m_exclusiveOwner.store(std::this_thread::get_id(), std::memory_order_relaxed);
+		}
+		~ExclusiveLock() { m_plugin.m_exclusiveOwner.store(std::thread::id{}, std::memory_order_relaxed); }
+
+		ExclusiveLock(const ExclusiveLock &) = delete;
+		ExclusiveLock &operator=(const ExclusiveLock &) = delete;
+
+	private:
+		VSTPlugin &m_plugin;
+		std::unique_lock<std::shared_mutex> m_lock;
+	};
+
+	bool holdsExclusiveLock() const { return m_exclusiveOwner.load(std::memory_order_relaxed) == std::this_thread::get_id(); }
+	void warnIfNotExclusivelyLocked(const char *func) const;
 
 	// Counts deferred teardown threads spawned by verifyProxy() that are still
 	// running. The destructor spins until this reaches zero before tearing down

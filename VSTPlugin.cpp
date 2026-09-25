@@ -52,7 +52,7 @@ VSTPlugin::VSTPlugin(obs_source_t *sourceContext) : m_sourceContext{sourceContex
 VSTPlugin::~VSTPlugin()
 {
 	{
-		std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+		ExclusiveLock grd(*this);
 		m_shuttingDown.store(true, std::memory_order_release);
 	}
 
@@ -86,7 +86,7 @@ VSTPlugin::~VSTPlugin()
 
 void VSTPlugin::loadEffectFromPath(std::string path)
 {
-	std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	ExclusiveLock grd(*this);
 
 	if (m_proxyDisconnected || m_effect != nullptr)
 		return;
@@ -142,6 +142,12 @@ void VSTPlugin::showErrorPopupAsync(std::string msg)
 #endif
 }
 
+void VSTPlugin::warnIfNotExclusivelyLocked(const char *func) const
+{
+	if (!holdsExclusiveLock())
+		blog(LOG_ERROR, "VST Plug-in: %s called without holding m_effectStatusMutex exclusively", func);
+}
+
 bool VSTPlugin::verifyProxy()
 {
 	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
@@ -173,7 +179,7 @@ bool VSTPlugin::verifyProxyLocked()
 			try {
 				std::thread([this, generation]() {
 					try {
-						std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+						ExclusiveLock grd(*this);
 						if (m_loadGeneration == generation)
 							stopProxy();
 					} catch (...) {
@@ -247,13 +253,15 @@ obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 
 void VSTPlugin::unloadEffect()
 {
-	std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	ExclusiveLock grd(*this);
 	unloadEffectLocked();
 }
 
 // Assumes the caller already holds an exclusive lock on m_effectStatusMutex.
 void VSTPlugin::unloadEffectLocked()
 {
+	warnIfNotExclusivelyLocked(__func__);
+
 	m_windowCreated = false;
 	m_proxyDisconnected = false;
 
@@ -287,13 +295,15 @@ bool VSTPlugin::hasWindowOpen()
 
 void VSTPlugin::openEditor()
 {
-	std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	ExclusiveLock grd(*this);
 	openEditorLocked();
 }
 
 // Assumes the caller already holds an exclusive lock on m_effectStatusMutex.
 void VSTPlugin::openEditorLocked()
 {
+	warnIfNotExclusivelyLocked(__func__);
+
 	if (isProxyDisconnected())
 		return;
 
@@ -312,7 +322,7 @@ void VSTPlugin::openEditorLocked()
 
 void VSTPlugin::hideEditor()
 {
-	std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	ExclusiveLock grd(*this);
 
 	if (isProxyDisconnected())
 		return;
@@ -327,7 +337,7 @@ void VSTPlugin::hideEditor()
 
 void VSTPlugin::closeEditor()
 {
-	std::unique_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	ExclusiveLock grd(*this);
 
 	m_is_open = false;
 
