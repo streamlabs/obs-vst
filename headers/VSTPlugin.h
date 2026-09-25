@@ -31,6 +31,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "aeffectx.h"
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
+#include <atomic>
 #include <memory>
 
 class grpc_vst_communicatorClient;
@@ -56,7 +58,7 @@ public:
 
 	bool isEditorOpen();
 	bool hasWindowOpen();
-	bool verifyProxy(const bool notifyAudioPause = false);
+	bool verifyProxy();
 	bool isProxyDisconnected() const { return m_proxyDisconnected; }
 
 	AEffect *loadEffect();
@@ -72,6 +74,11 @@ public:
 
 private:
 	void stopProxy();
+	void unloadEffectLocked();
+	void openEditorLocked();
+	bool verifyProxyLocked();
+
+	static void showErrorPopupAsync(std::string msg);
 
 	int32_t chooseProxyPort();
 
@@ -89,7 +96,18 @@ private:
 	std::string m_sourceName;
 	std::string m_filterName;
 
-	std::recursive_mutex m_effectStatusMutex;
+	std::shared_mutex m_effectStatusMutex;
+
+	// Counts deferred teardown threads spawned by verifyProxy() that are still
+	// running. The destructor spins until this reaches zero before tearing down
+	// the object, so a detached teardown thread can never touch `this` after it
+	// has been deleted.
+	std::atomic<int> m_pendingTeardowns{0};
+
+	// Bumped on every load (under the exclusive lock). A deferred teardown only
+	// stops the proxy if this still matches the value it captured, so it can't kill
+	// a newer proxy that was loaded after the disconnect was detected.
+	uint64_t m_loadGeneration{0};
 
 	std::unique_ptr<AEffect> m_effect;
 

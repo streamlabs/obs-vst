@@ -63,11 +63,8 @@ AEffect *VSTPlugin::loadEffect()
 		blog(LOG_ERROR, "VST Plug-in: Crashed while launching vst server");
 	}
 	if (!launched) {
-		::MessageBoxA(NULL,
-			      (std::filesystem::path(m_pluginPath).filename().string() +
-			       " failed to launch.\n\n You may restart the application or recreate the filter to try again.")
-				      .c_str(),
-			      "VST Filter Error", MB_ICONERROR | MB_TOPMOST);
+		showErrorPopupAsync(std::filesystem::path(m_pluginPath).filename().string() +
+				    " failed to launch.\n\n You may restart the application or recreate the filter to try again.");
 
 		blog(LOG_ERROR, "VST Plug-in: can't start vst server, GetLastError = %d", GetLastError());
 		m_effect = nullptr;
@@ -78,7 +75,7 @@ AEffect *VSTPlugin::loadEffect()
 		grpc::CreateChannel("localhost:" + std::to_string(portNumber), grpc::InsecureChannelCredentials()));
 	m_remote->updateAEffect(m_effect.get());
 
-	if (!verifyProxy())
+	if (!verifyProxyLocked())
 		return nullptr;
 
 	return m_effect.get();
@@ -114,10 +111,12 @@ int32_t VSTPlugin::chooseProxyPort()
 	return result;
 }
 
+// Assumes the caller already holds an exclusive lock on m_effectStatusMutex --
+// either unloadEffectLocked() (called from unloadEffect(), which locks) or the
+// deferred teardown thread spawned by verifyProxyLocked() (which locks before calling
+// this). std::shared_mutex is not recursive, so this must not lock it again.
 void VSTPlugin::stopProxy()
 {
-	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
-
 	if (m_effect == nullptr)
 		return;
 
