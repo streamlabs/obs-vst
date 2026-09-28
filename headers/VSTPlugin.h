@@ -72,6 +72,10 @@ public:
 	std::atomic<bool> m_proxyDisconnected{false};
 
 private:
+	// Lets tests/save_while_processing_test.cpp attach an in-process fake proxy
+	// instead of launching win-streamlabs-vst.exe.
+	friend class VSTPluginTestAccess;
+
 	void stopProxy();
 	void unloadEffectLocked();
 	void openEditorLocked();
