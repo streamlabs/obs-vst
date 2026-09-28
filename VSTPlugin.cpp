@@ -367,6 +367,8 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 	if (effectFlags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
 		void *buf = nullptr;
 		intptr_t chunkSize = m_remote->dispatcher(m_effect.get(), effGetChunk, int(type), 0, &buf, 0.0, 0);
+		// The gRPC client malloc()s a copy of the chunk into buf; free it on every path.
+		std::unique_ptr<void, decltype(&free)> bufOwner(buf, &free);
 
 		if (!verifyProxyLocked())
 			return "";
