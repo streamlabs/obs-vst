@@ -1,8 +1,8 @@
 // Regression test: saving filter settings must not interrupt live audio.
 //
-// vst_save() calls getChunk(), which makes blocking RPCs to the proxy. Those used
-// to hold m_effectStatusMutex exclusively, so process()'s try_lock failed and
-// audio skipped the VST for the whole save. This test drives the real VSTPlugin
+// vst_save() calls getChunk(), which makes blocking RPCs to the proxy. getChunk()
+// takes a shared lifetime lock so process() can continue while settings are
+// saved; changing that lock to exclusive would make process() bypass audio.
 // and grpc_vst_communicatorClient against an in-process fake proxy server:
 //
 //  - an "audio thread" calls process() in a loop; the fake proxy halves every
@@ -50,12 +50,12 @@ constexpr float kProcessedSample = 0.5f;
 
 int g_failures = 0;
 
-#define CHECK(cond)                                                               \
-	do {                                                                      \
-		if (!(cond)) {                                                    \
+#define CHECK(cond)                                                                      \
+	do {                                                                             \
+		if (!(cond)) {                                                           \
 			std::fprintf(stderr, "FAILED: %s (line %d)\n", #cond, __LINE__); \
-			g_failures++;                                             \
-		}                                                                 \
+			g_failures++;                                                    \
+		}                                                                        \
 	} while (0)
 
 class FakeVstProxy final : public grpc_vst_communicator::Service {
@@ -89,8 +89,7 @@ public:
 		return grpc::Status::OK;
 	}
 
-	grpc::Status com_grpc_processReplacing(grpc::ServerContext *, const grpc_processReplacing_Request *request,
-					       grpc_processReplacing_Reply *reply) override
+	grpc::Status com_grpc_processReplacing(grpc::ServerContext *, const grpc_processReplacing_Request *request, grpc_processReplacing_Reply *reply) override
 	{
 		const std::string &in = request->adata();
 		std::string out(in.size(), '\0');
@@ -134,10 +133,7 @@ public:
 		return grpc::Status::OK;
 	}
 
-	grpc::Status com_grpc_stopServer(grpc::ServerContext *, const grpc_stopServer_Request *, grpc_stopServer_Reply *) override
-	{
-		return grpc::Status::OK;
-	}
+	grpc::Status com_grpc_stopServer(grpc::ServerContext *, const grpc_stopServer_Request *, grpc_stopServer_Reply *) override { return grpc::Status::OK; }
 
 private:
 	// Every reply refreshes the client's cached metadata, so all of them must
@@ -268,8 +264,7 @@ int main()
 		audioThread.join();
 
 		std::printf("effGetChunk calls: %d (timed out: %d)\n", proxy.chunkCalls.load(), proxy.chunkTimeouts.load());
-		std::printf("buffers during save: %d processed, %d bypassed\n", stats.processedDuringSave.load(),
-			    stats.bypassedDuringSave.load());
+		std::printf("buffers during save: %d processed, %d bypassed\n", stats.processedDuringSave.load(), stats.bypassedDuringSave.load());
 
 		CHECK(!bank.empty());
 		CHECK(!program.empty());
