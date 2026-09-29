@@ -141,10 +141,29 @@ void VSTPlugin::stopProxy()
 		CloseHandle(hThread);
 	};
 
+	// Join workers from earlier stops that have finished, so repeated reload/disconnect
+	// cycles don't keep a thread handle per cycle. A worker whose thread never started
+	// is dropped too.
+	for (auto it = m_proxyShutdownWorkers.begin(); it != m_proxyShutdownWorkers.end();) {
+		if (!it->thread.joinable() || it->done->load(std::memory_order_acquire)) {
+			if (it->thread.joinable())
+				it->thread.join();
+			it = m_proxyShutdownWorkers.erase(it);
+		} else {
+			++it;
+		}
+	}
+
 	// Wait for graceful end in a thread, don't block here. If no thread can be started,
 	// wait here instead so the process still gets stopped and its handles closed.
 	try {
-		m_proxyShutdownThreads.emplace_back(waitForExit);
+		// Add the entry before starting the thread, so nothing that can throw happens
+		// while a running thread isn't owned by the vector yet.
+		ProxyShutdownWorker &worker = m_proxyShutdownWorkers.emplace_back();
+		worker.thread = std::thread([waitForExit, done = worker.done.get()]() {
+			waitForExit();
+			done->store(true, std::memory_order_release);
+		});
 	} catch (const std::exception &e) {
 		blog(LOG_ERROR, "VST Plug-in: unable to start proxy shutdown thread: %s", e.what());
 		waitForExit();

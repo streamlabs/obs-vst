@@ -150,7 +150,17 @@ private:
 	// the object, so a detached teardown thread can never touch `this` after it
 	// has been deleted.
 	std::atomic<int> m_pendingTeardowns{0};
-	std::vector<std::thread> m_proxyShutdownThreads;
+
+	// Threads started by stopProxy() to wait for (or kill) an old proxy process. They're
+	// joined rather than detached so the destructor can make sure none is still running
+	// plug-in code. Finished ones are reaped by the next stopProxy(), so only workers
+	// that are still running stay in the list.
+	struct ProxyShutdownWorker {
+		std::thread thread;
+		// Heap-allocated so the running thread's pointer stays valid when the vector moves it.
+		std::unique_ptr<std::atomic<bool>> done = std::make_unique<std::atomic<bool>>(false);
+	};
+	std::vector<ProxyShutdownWorker> m_proxyShutdownWorkers;
 	std::thread m_errorPopupThread;
 	std::atomic<unsigned long> m_errorPopupThreadId{0};
 	std::atomic<bool> m_errorPopupThreadStarted{false};
