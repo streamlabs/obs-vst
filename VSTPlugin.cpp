@@ -366,7 +366,8 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 	const int effectFlags = m_remote->getEffectFlags();
 	if (effectFlags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
 		void *buf = nullptr;
-		intptr_t chunkSize = m_remote->dispatcher(m_effect.get(), effGetChunk, int(type), 0, &buf, 0.0, 0);
+		size_t bufSize = 0;
+		intptr_t chunkSize = m_remote->dispatcher(m_effect.get(), effGetChunk, int(type), 0, &buf, 0.0, 0, &bufSize);
 		// The gRPC client malloc()s a copy of the chunk into buf; free it on every path.
 		std::unique_ptr<void, decltype(&free)> bufOwner(buf, &free);
 
@@ -375,6 +376,12 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 
 		if (!buf || chunkSize == 0) {
 			blog(LOG_WARNING, "VST Plug-in: effGetChunk failed");
+			return "";
+		}
+
+		// chunkSize is what the proxy reported; only bufSize bytes actually arrived.
+		if (chunkSize < 0 || size_t(chunkSize) > bufSize || size_t(chunkSize) > UINT32_MAX) {
+			blog(LOG_WARNING, "VST Plug-in: effGetChunk reported %lld bytes but returned %zu", (long long)chunkSize, bufSize);
 			return "";
 		}
 

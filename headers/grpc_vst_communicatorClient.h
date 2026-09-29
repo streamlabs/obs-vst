@@ -28,7 +28,9 @@ public:
 
 	grpc_vst_communicatorClient(std::shared_ptr<Channel> channel);
 
-	intptr_t dispatcher(AEffect *a, int b, int c, intptr_t d, void *ptr, float f, size_t ptr_size);
+	// When ptr points to a null void*, the reply data is malloc()ed into it and its
+	// size is written to allocated_size (if given). The caller must free() it.
+	intptr_t dispatcher(AEffect *a, int b, int c, intptr_t d, void *ptr, float f, size_t ptr_size, size_t *allocated_size = nullptr);
 
 	float getParameter(AEffect *a, int b);
 

@@ -63,12 +63,18 @@ public:
 	std::atomic<int> processCalls{0};
 	std::atomic<int> chunkCalls{0};
 	std::atomic<int> chunkTimeouts{0};
+	// Report a chunk size larger than the data actually sent, like a buggy proxy.
+	std::atomic<bool> overstateChunkSize{false};
 
 	grpc::Status com_grpc_dispatcher(grpc::ServerContext *, const grpc_dispatcher_Request *request, grpc_dispatcher_Reply *reply) override
 	{
 		fillMetadata(reply);
 
-		if (request->param1() == effGetChunk) {
+		if (request->param1() == effGetChunk && overstateChunkSize) {
+			const std::string chunk = "short";
+			reply->set_ptr_data(chunk);
+			reply->set_returnval(int64_t(chunk.size() + 4096));
+		} else if (request->param1() == effGetChunk) {
 			chunkCalls++;
 
 			const int start = processCalls.load();
@@ -274,6 +280,10 @@ int main()
 		CHECK(proxy.chunkTimeouts == 0);
 		CHECK(stats.processedDuringSave >= 2 * kBuffersDuringChunk);
 		CHECK(stats.bypassedDuringSave == 0);
+
+		// getChunk() must not read past the data the proxy actually sent.
+		proxy.overstateChunkSize = true;
+		CHECK(plugin.getChunk(VstChunkType::Bank).empty());
 
 		VSTPluginTestAccess::detachProxy(plugin);
 	}

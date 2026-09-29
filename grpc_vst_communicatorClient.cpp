@@ -22,7 +22,7 @@ void grpc_vst_communicatorClient::syncEffectMetadata(const EffectMetadata &metad
 	m_effectMetadata = metadata;
 }
 
-intptr_t grpc_vst_communicatorClient::dispatcher(AEffect *a, int b, int c, intptr_t d, void *ptr, float f, size_t ptr_size)
+intptr_t grpc_vst_communicatorClient::dispatcher(AEffect *a, int b, int c, intptr_t d, void *ptr, float f, size_t ptr_size, size_t *allocated_size)
 {
 	grpc_dispatcher_Request request;
 	request.set_param1(b);
@@ -52,6 +52,8 @@ intptr_t grpc_vst_communicatorClient::dispatcher(AEffect *a, int b, int c, intpt
 		if (*realDeal == nullptr) {
 			*realDeal = malloc(reply.ptr_data().size());
 			memcpy(*realDeal, reply.ptr_data().data(), reply.ptr_data().size());
+			if (allocated_size)
+				*allocated_size = reply.ptr_data().size();
 		} else if (ptr_size != 0) {
 			if (ptr_size > reply.ptr_data().size())
 				ptr_size = reply.ptr_data().size();
