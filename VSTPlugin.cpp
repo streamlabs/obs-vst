@@ -152,6 +152,12 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
+	if (m_errorPopupThread.joinable()) {
+		if (!m_errorPopupThreadStarted.load(std::memory_order_acquire) || m_errorPopupThreadId.load(std::memory_order_acquire) != 0)
+			return;
+		m_errorPopupThread.join();
+	}
+	m_errorPopupThreadStarted.store(false, std::memory_order_release);
 	try {
 		m_errorPopupThread = std::thread([this, msg]() {
 			m_errorPopupThreadId.store(GetCurrentThreadId(), std::memory_order_release);

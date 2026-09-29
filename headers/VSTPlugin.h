@@ -81,7 +81,7 @@ private:
 	void openEditorLocked();
 	bool verifyProxyLocked();
 
-	static void showErrorPopupAsync(std::string msg);
+	void showErrorPopupAsync(std::string msg);
 
 	// Runs fn on a detached thread. Returns false, after logging, if the thread couldn't
 	// be started. A running std::thread must never be destroyed while joinable (that calls
