@@ -27,6 +27,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifdef WIN32
 #include <cstringt.h>
 #include <windows.h>
+
+static BOOL CALLBACK closeErrorPopupWindow(HWND hwnd, LPARAM)
+{
+	PostMessage(hwnd, WM_CLOSE, 0, 0);
+	return TRUE;
+}
 #endif
 #include <functional>
 #include <filesystem>
@@ -57,6 +63,18 @@ VSTPlugin::~VSTPlugin()
 		ExclusiveLock grd(*this);
 		m_shuttingDown.store(true, std::memory_order_release);
 	}
+
+	while (m_errorPopupThread.joinable() && !m_errorPopupThreadStarted.load(std::memory_order_acquire))
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+	while (m_errorPopupThread.joinable() && m_errorPopupThreadId.load(std::memory_order_acquire) != 0) {
+#ifdef WIN32
+		EnumThreadWindows(m_errorPopupThreadId.load(std::memory_order_acquire), closeErrorPopupWindow, 0);
+#endif
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	if (m_errorPopupThread.joinable())
+		m_errorPopupThread.join();
 
 	while (m_pendingTeardowns.load(std::memory_order_acquire) != 0)
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -134,8 +152,16 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
-	if (!startDetachedThread("error popup", [msg]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }))
-		blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
+	try {
+		m_errorPopupThread = std::thread([this, msg]() {
+			m_errorPopupThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+			m_errorPopupThreadStarted.store(true, std::memory_order_release);
+			::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL);
+			m_errorPopupThreadId.store(0, std::memory_order_release);
+		});
+	} catch (const std::exception &e) {
+		blog(LOG_ERROR, "VST Plug-in: unable to start error popup thread: %s", e.what());
+	}
 #else
 	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
 #endif

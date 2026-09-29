@@ -149,6 +149,9 @@ private:
 	// the object, so a detached teardown thread can never touch `this` after it
 	// has been deleted.
 	std::atomic<int> m_pendingTeardowns{0};
+	std::thread m_errorPopupThread;
+	std::atomic<unsigned long> m_errorPopupThreadId{0};
+	std::atomic<bool> m_errorPopupThreadStarted{false};
 
 	// Bumped on every load (under the exclusive lock). A deferred teardown only
 	// stops the proxy if this still matches the value it captured, so it can't kill
