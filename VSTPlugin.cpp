@@ -40,12 +40,14 @@ VSTPlugin::VSTPlugin(obs_source_t *sourceContext) : m_sourceContext{sourceContex
 	int numChannels = VST_MAX_CHANNELS;
 	int blocksize = BLOCK_SIZE;
 
-	m_inputs = (float **)malloc(sizeof(float **) * numChannels);
-	m_outputs = (float **)malloc(sizeof(float **) * numChannels);
+	m_inputs = (float **)malloc(sizeof(float *) * numChannels);
+	m_outputs = (float **)malloc(sizeof(float *) * numChannels);
 
+	// process() sends every channel to the proxy, using m_inputs for channels the
+	// source doesn't have, so these must start out as silence rather than garbage.
 	for (int channel = 0; channel < numChannels; channel++) {
-		m_inputs[channel] = (float *)malloc(sizeof(float *) * blocksize);
-		m_outputs[channel] = (float *)malloc(sizeof(float *) * blocksize);
+		m_inputs[channel] = (float *)calloc(blocksize, sizeof(float));
+		m_outputs[channel] = (float *)calloc(blocksize, sizeof(float));
 	}
 }
 
