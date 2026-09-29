@@ -32,8 +32,12 @@ using grpc::Channel;
 using grpc::ClientContext;
 using grpc::Status;
 
-AEffect *VSTPlugin::loadEffect()
+// Assumes the caller already holds an exclusive lock on m_effectStatusMutex
+// (loadEffectFromPath() does), since this replaces m_effect and m_remote.
+AEffect *VSTPlugin::loadEffectLocked()
 {
+	warnIfNotExclusivelyLocked(__func__);
+
 	blog(LOG_DEBUG, "VST Plug-in: starting win-streamlabs-vst.exe for '%s'", m_pluginPath.c_str());
 
 	wchar_t *wpath;

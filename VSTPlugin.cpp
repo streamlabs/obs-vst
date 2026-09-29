@@ -121,7 +121,7 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 
 	unloadEffectLocked();
 	m_loadGeneration++;
-	loadEffect();
+	loadEffectLocked();
 
 	if (!verifyProxyLocked()) {
 		blog(LOG_WARNING, "VST Plug-in: loadEffectFromPath Can't load effect!");

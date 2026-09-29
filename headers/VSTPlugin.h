@@ -62,7 +62,6 @@ public:
 	bool verifyProxy();
 	bool isProxyDisconnected() const { return m_proxyDisconnected; }
 
-	AEffect *loadEffect();
 	bool hasEffect();
 
 	obs_audio_data *process(struct obs_audio_data *audio);
@@ -78,6 +77,7 @@ private:
 	friend class VSTPluginTestAccess;
 
 	void stopProxy();
+	AEffect *loadEffectLocked();
 	void unloadEffectLocked();
 	void openEditorLocked();
 	bool verifyProxyLocked();

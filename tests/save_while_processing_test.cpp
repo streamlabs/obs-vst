@@ -169,7 +169,7 @@ private:
 
 class VSTPluginTestAccess {
 public:
-	// Stands in for loadEffect(): attach a client connected to the fake proxy.
+	// Stands in for loadEffectLocked(): attach a client connected to the fake proxy.
 	static bool attachProxy(VSTPlugin &plugin, const std::string &address)
 	{
 #ifdef WIN32
