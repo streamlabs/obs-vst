@@ -83,6 +83,27 @@ private:
 
 	static void showErrorPopupAsync(std::string msg);
 
+	// Runs fn on a detached thread. Returns false, after logging, if the thread couldn't
+	// be started. A running std::thread must never be destroyed while joinable (that calls
+	// std::terminate()), so if detach() fails the thread object is leaked instead.
+	template<typename Fn> static bool startDetachedThread(const char *what, Fn &&fn)
+	{
+		std::unique_ptr<std::thread> thread;
+		try {
+			thread = std::make_unique<std::thread>(std::forward<Fn>(fn));
+			thread->detach();
+			return true;
+		} catch (const std::exception &e) {
+			if (thread && thread->joinable()) {
+				thread.release();
+				blog(LOG_ERROR, "VST Plug-in: unable to detach %s thread: %s", what, e.what());
+				return true;
+			}
+			blog(LOG_ERROR, "VST Plug-in: unable to start %s thread: %s", what, e.what());
+			return false;
+		}
+	}
+
 	int32_t chooseProxyPort();
 
 	bool m_is_open{false};

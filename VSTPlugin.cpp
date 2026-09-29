@@ -132,11 +132,9 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
-	try {
-		std::thread([msg]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }).detach();
-	} catch (const std::exception &e) {
-		blog(LOG_ERROR, "VST Plug-in: unable to show error popup (%s): %s", e.what(), msg.c_str());
-	}
+	if (!startDetachedThread("error popup",
+				 [msg]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }))
+		blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
 #else
 	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
 #endif
@@ -176,24 +174,21 @@ bool VSTPlugin::verifyProxyLocked()
 
 			const uint64_t generation = m_loadGeneration;
 			m_pendingTeardowns.fetch_add(1, std::memory_order_relaxed);
-			try {
-				std::thread([this, generation]() {
-					try {
-						ExclusiveLock grd(*this);
-						if (m_loadGeneration == generation)
-							stopProxy();
-					} catch (...) {
-						blog(LOG_ERROR, "VST Plug-in: deferred proxy teardown failed");
-					}
-					m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
-				}).detach();
-			} catch (const std::exception &e) {
-				// Only the std::thread constructor can throw here, in which case the body
-				// never runs. Don't rethrow: this can be called from the audio thread, and
-				// the proxy is still cleaned up by the next unloadEffect().
+			const bool started = startDetachedThread("deferred proxy teardown", [this, generation]() {
+				try {
+					ExclusiveLock grd(*this);
+					if (m_loadGeneration == generation)
+						stopProxy();
+				} catch (...) {
+					blog(LOG_ERROR, "VST Plug-in: deferred proxy teardown failed");
+				}
 				m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
-				blog(LOG_ERROR, "VST Plug-in: unable to start deferred proxy teardown: %s", e.what());
-			}
+			});
+			// If the thread never started, its body won't decrement the counter. Don't
+			// tear down here: this can be called from the audio thread, and the proxy is
+			// still cleaned up by the next unloadEffect().
+			if (!started)
+				m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
 		}
 
 		return false;

@@ -129,21 +129,22 @@ void VSTPlugin::stopProxy()
 
 	m_remote->stopServer(movedPtr.get());
 
-	// Wait for graceful end in a thread, don't block here
-	std::thread(
-		[](HANDLE hProcess, HANDLE hThread, INT nWaitTime) {
-			// Might have to kill it, wait a moment but note that wait time is 0 if tcp connection already isn't valid
-			if (WaitForSingleObject(hProcess, nWaitTime) == WAIT_TIMEOUT) {
-				if (TerminateProcess(hProcess, 0) == FALSE) {
-					blog(LOG_ERROR, "VST Plug-in: process is stuck somehow cannot terminate, GetLastError = %d", GetLastError());
-				}
+	auto waitForExit = [hProcess = m_winServer.hProcess, hThread = m_winServer.hThread, nWaitTime = m_proxyDisconnected ? 3000 : 0]() {
+		// Might have to kill it, wait a moment but note that wait time is 0 if tcp connection already isn't valid
+		if (WaitForSingleObject(hProcess, nWaitTime) == WAIT_TIMEOUT) {
+			if (TerminateProcess(hProcess, 0) == FALSE) {
+				blog(LOG_ERROR, "VST Plug-in: process is stuck somehow cannot terminate, GetLastError = %d", GetLastError());
 			}
+		}
 
-			CloseHandle(hProcess);
-			CloseHandle(hThread);
-		},
-		m_winServer.hProcess, m_winServer.hThread, m_proxyDisconnected ? 3000 : 0)
-		.detach();
+		CloseHandle(hProcess);
+		CloseHandle(hThread);
+	};
+
+	// Wait for graceful end in a thread, don't block here. If no thread can be started,
+	// wait here instead so the process still gets stopped and its handles closed.
+	if (!startDetachedThread("proxy shutdown", waitForExit))
+		waitForExit();
 
 	m_winServer = {};
 }
