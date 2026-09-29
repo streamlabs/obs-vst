@@ -280,8 +280,7 @@ int main()
 		audioThread.join();
 
 		std::printf("effGetChunk calls: %d (timed out: %d)\n", proxy.chunkCalls.load(), proxy.chunkTimeouts.load());
-		std::printf("buffers during effGetChunk: %d processed, %d bypassed\n", stats.processedDuringChunk.load(),
-			    stats.bypassedDuringChunk.load());
+		std::printf("buffers during effGetChunk: %d processed, %d bypassed\n", stats.processedDuringChunk.load(), stats.bypassedDuringChunk.load());
 
 		CHECK(!bank.empty());
 		CHECK(!program.empty());
