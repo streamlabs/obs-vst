@@ -132,8 +132,7 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
 #ifdef WIN32
-	if (!startDetachedThread("error popup",
-				 [msg]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }))
+	if (!startDetachedThread("error popup", [msg]() { ::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL); }))
 		blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
 #else
 	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
