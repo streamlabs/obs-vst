@@ -143,8 +143,12 @@ void VSTPlugin::stopProxy()
 
 	// Wait for graceful end in a thread, don't block here. If no thread can be started,
 	// wait here instead so the process still gets stopped and its handles closed.
-	if (!startDetachedThread("proxy shutdown", waitForExit))
+	try {
+		m_proxyShutdownThreads.emplace_back(waitForExit);
+	} catch (const std::exception &e) {
+		blog(LOG_ERROR, "VST Plug-in: unable to start proxy shutdown thread: %s", e.what());
 		waitForExit();
+	}
 
 	m_winServer = {};
 }

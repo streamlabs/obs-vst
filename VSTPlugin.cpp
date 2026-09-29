@@ -79,6 +79,11 @@ VSTPlugin::~VSTPlugin()
 	while (m_pendingTeardowns.load(std::memory_order_acquire) != 0)
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
+	for (auto &thread : m_proxyShutdownThreads) {
+		if (thread.joinable())
+			thread.join();
+	}
+
 	int numChannels = VST_MAX_CHANNELS;
 
 	for (int channel = 0; channel < numChannels; channel++) {

@@ -34,6 +34,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <shared_mutex>
 #include <atomic>
 #include <memory>
+#include <vector>
 
 class grpc_vst_communicatorClient;
 
@@ -149,6 +150,7 @@ private:
 	// the object, so a detached teardown thread can never touch `this` after it
 	// has been deleted.
 	std::atomic<int> m_pendingTeardowns{0};
+	std::vector<std::thread> m_proxyShutdownThreads;
 	std::thread m_errorPopupThread;
 	std::atomic<unsigned long> m_errorPopupThreadId{0};
 	std::atomic<bool> m_errorPopupThreadStarted{false};
