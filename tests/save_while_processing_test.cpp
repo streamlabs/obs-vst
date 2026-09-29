@@ -3,7 +3,8 @@
 // vst_save() calls getChunk(), which makes blocking RPCs to the proxy. getChunk()
 // takes a shared lifetime lock so process() can continue while settings are
 // saved; changing that lock to exclusive would make process() bypass audio.
-// and grpc_vst_communicatorClient against an in-process fake proxy server:
+// This test runs the real VSTPlugin and grpc_vst_communicatorClient against an
+// in-process fake proxy server:
 //
 //  - an "audio thread" calls process() in a loop; the fake proxy halves every
 //    sample, so a bypassed buffer is easy to spot (1.0 instead of 0.5).
@@ -12,6 +13,9 @@
 //    kBuffersDuringChunk processReplacing calls *during* that effGetChunk. If
 //    process() is blocked by the save, that never happens and the handler times
 //    out, so the test is driven by events rather than sleeps.
+//  - buffers are only counted if the whole process() call happened while an
+//    effGetChunk was blocked in the fake proxy (i.e. while getChunk() held the
+//    lock), so the counts don't depend on thread scheduling.
 //
 // Build with -DBUILD_TESTING=ON and run: ctest -L sl-vst --output-on-failure
 //
@@ -30,6 +34,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
@@ -44,7 +49,8 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
 constexpr int kBuffersDuringChunk = 20;
-constexpr auto kChunkTimeout = std::chrono::seconds(5);
+// Only reached if the test is failing; generous so a slow machine can't fail it.
+constexpr auto kChunkTimeout = std::chrono::seconds(10);
 constexpr float kInputSample = 1.0f;
 constexpr float kProcessedSample = 0.5f;
 
@@ -63,6 +69,8 @@ public:
 	std::atomic<int> processCalls{0};
 	std::atomic<int> chunkCalls{0};
 	std::atomic<int> chunkTimeouts{0};
+	// True while an effGetChunk handler is waiting, so getChunk() is inside its RPC.
+	std::atomic<bool> chunkInFlight{false};
 	// Report a chunk size larger than the data actually sent, like a buggy proxy.
 	std::atomic<bool> overstateChunkSize{false};
 
@@ -77,6 +85,8 @@ public:
 		} else if (request->param1() == effGetChunk) {
 			chunkCalls++;
 
+			// Set before taking the snapshot below; see the processedDuringChunk check.
+			chunkInFlight = true;
 			const int start = processCalls.load();
 			const auto deadline = Clock::now() + kChunkTimeout;
 			while (processCalls.load() - start < kBuffersDuringChunk) {
@@ -86,6 +96,7 @@ public:
 				}
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
+			chunkInFlight = false;
 
 			const std::string chunk = "fake-chunk-data";
 			reply->set_ptr_data(chunk);
@@ -97,14 +108,13 @@ public:
 
 	grpc::Status com_grpc_processReplacing(grpc::ServerContext *, const grpc_processReplacing_Request *request, grpc_processReplacing_Reply *reply) override
 	{
+		// Copy through a float vector rather than casting the byte buffers to float*.
 		const std::string &in = request->adata();
-		std::string out(in.size(), '\0');
-
-		const size_t samples = in.size() / sizeof(float);
-		const float *src = reinterpret_cast<const float *>(in.data());
-		float *dst = reinterpret_cast<float *>(out.data());
-		for (size_t i = 0; i < samples; i++)
-			dst[i] = src[i] * kProcessedSample;
+		std::vector<float> samples(in.size() / sizeof(float));
+		std::memcpy(samples.data(), in.data(), samples.size() * sizeof(float));
+		for (float &sample : samples)
+			sample *= kProcessedSample;
+		const std::string out(reinterpret_cast<const char *>(samples.data()), samples.size() * sizeof(float));
 
 		reply->set_frames(request->frames());
 		reply->set_arraysize(request->arraysize());
@@ -183,12 +193,12 @@ public:
 namespace {
 
 struct AudioStats {
-	std::atomic<int> processedBeforeSave{0};
-	std::atomic<int> processedDuringSave{0};
-	std::atomic<int> bypassedDuringSave{0};
+	std::atomic<int> processed{0};
+	std::atomic<int> processedDuringChunk{0};
+	std::atomic<int> bypassedDuringChunk{0};
 };
 
-void runAudioThread(VSTPlugin &plugin, std::atomic<bool> &stop, std::atomic<bool> &saving, AudioStats &stats)
+void runAudioThread(VSTPlugin &plugin, const FakeVstProxy &proxy, std::atomic<bool> &stop, AudioStats &stats)
 {
 	std::vector<float> left(BLOCK_SIZE), right(BLOCK_SIZE);
 
@@ -201,8 +211,9 @@ void runAudioThread(VSTPlugin &plugin, std::atomic<bool> &stop, std::atomic<bool
 		audio.data[1] = reinterpret_cast<uint8_t *>(right.data());
 		audio.frames = BLOCK_SIZE;
 
-		const bool duringSave = saving.load();
+		const bool chunkBefore = proxy.chunkInFlight.load();
 		plugin.process(&audio);
+		const bool chunkAfter = proxy.chunkInFlight.load();
 
 		bool processed = true;
 		for (int i = 0; i < BLOCK_SIZE; i++) {
@@ -212,10 +223,12 @@ void runAudioThread(VSTPlugin &plugin, std::atomic<bool> &stop, std::atomic<bool
 			}
 		}
 
-		if (duringSave && saving.load())
-			(processed ? stats.processedDuringSave : stats.bypassedDuringSave)++;
-		else if (!duringSave && processed)
-			stats.processedBeforeSave++;
+		if (processed)
+			stats.processed++;
+
+		// Only count calls that ran entirely while getChunk() was inside its RPC.
+		if (chunkBefore && chunkAfter)
+			(processed ? stats.processedDuringChunk : stats.bypassedDuringChunk)++;
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -247,30 +260,28 @@ int main()
 		}
 
 		std::atomic<bool> stop{false};
-		std::atomic<bool> saving{false};
 		AudioStats stats;
-		std::thread audioThread(runAudioThread, std::ref(plugin), std::ref(stop), std::ref(saving), std::ref(stats));
+		std::thread audioThread(runAudioThread, std::ref(plugin), std::cref(proxy), std::ref(stop), std::ref(stats));
 
 		// Make sure audio is actually being processed before the save starts, so
 		// a broken setup fails here with a clear message instead of later.
-		const auto warmupDeadline = Clock::now() + std::chrono::seconds(5);
-		while (stats.processedBeforeSave < 5 && Clock::now() < warmupDeadline)
+		const auto warmupDeadline = Clock::now() + kChunkTimeout;
+		while (stats.processed < 5 && Clock::now() < warmupDeadline)
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		CHECK(stats.processedBeforeSave >= 5);
+		CHECK(stats.processed >= 5);
 
 		// Same calls, in the same order, as vst_save().
-		saving = true;
 		const std::string bank = plugin.getChunk(VstChunkType::Bank);
 		const std::string program = plugin.getChunk(VstChunkType::Program);
 		const std::string parameter = plugin.getChunk(VstChunkType::Parameter);
 		const bool proxyOk = plugin.verifyProxy();
-		saving = false;
 
 		stop = true;
 		audioThread.join();
 
 		std::printf("effGetChunk calls: %d (timed out: %d)\n", proxy.chunkCalls.load(), proxy.chunkTimeouts.load());
-		std::printf("buffers during save: %d processed, %d bypassed\n", stats.processedDuringSave.load(), stats.bypassedDuringSave.load());
+		std::printf("buffers during effGetChunk: %d processed, %d bypassed\n", stats.processedDuringChunk.load(),
+			    stats.bypassedDuringChunk.load());
 
 		CHECK(!bank.empty());
 		CHECK(!program.empty());
@@ -278,8 +289,12 @@ int main()
 		CHECK(proxyOk);
 		CHECK(proxy.chunkCalls == 2);
 		CHECK(proxy.chunkTimeouts == 0);
-		CHECK(stats.processedDuringSave >= 2 * kBuffersDuringChunk);
-		CHECK(stats.bypassedDuringSave == 0);
+		// Each effGetChunk waits for kBuffersDuringChunk server-side calls. The audio
+		// thread makes them one at a time, so all but the first (which may have started
+		// before chunkInFlight was set) and the last (which may return after it was
+		// cleared) ran entirely inside the window.
+		CHECK(stats.processedDuringChunk >= 2 * (kBuffersDuringChunk - 2));
+		CHECK(stats.bypassedDuringChunk == 0);
 
 		// getChunk() must not read past the data the proxy actually sent.
 		proxy.overstateChunkSize = true;
