@@ -19,7 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <util/platform.h>
 
-AEffect *VSTPlugin::loadEffect()
+AEffect *VSTPlugin::loadEffectLocked()
 {
 	AEffect *plugin = nullptr;
 

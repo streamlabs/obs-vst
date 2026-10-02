@@ -3,6 +3,19 @@ Use VST 2.x plugins as audio filters in OBS.
 
 ![Plugin Preview](screenshot.png)
 
+## Tests
+`tests/save_while_processing_test.cpp` checks that saving the filter (`vst_save()`) doesn't interrupt live audio, and that `getChunk()` rejects a chunk whose reported size is larger than the data received. It runs the real `VSTPlugin` code against a fake in-process proxy, so no VST plug-in or `win-streamlabs-vst.exe` is needed. It's Windows only.
+
+The test is only built when `BUILD_TESTING` is on. From the obs-studio root:
+
+```
+cmake -S . -B build_x64 -DBUILD_TESTING=ON
+cmake --build build_x64 --config RelWithDebInfo --target sl-vst-save-while-processing-test
+ctest --test-dir build_x64 -C RelWithDebInfo -L sl-vst --output-on-failure
+```
+
+A passing run prints `PASSED: audio kept processing during save`. You can also run `build_x64/plugins/sl-vst/RelWithDebInfo/sl-vst-save-while-processing-test.exe` directly, but `ctest` adds the libobs and FFmpeg DLL folders to `PATH` for you.
+
 ## Research
 ### Sites
 *  http://teragonaudio.com/article/How-to-make-your-own-VST-host.html

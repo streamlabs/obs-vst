@@ -257,3 +257,40 @@ if(WIN32)
 
 	set_target_properties_obs(win-streamlabs-vst PROPERTIES FOLDER plugins/obs-vst PREFIX "")
 endif(WIN32)
+
+# Regression test: saving settings must not interrupt live audio. Builds the real
+# VSTPlugin against an in-process fake proxy server (see the test file).
+if(WIN32 AND BUILD_TESTING)
+	add_executable(sl-vst-save-while-processing-test
+		tests/save_while_processing_test.cpp
+		VSTPlugin.cpp
+		win/VSTPlugin-win.cpp
+		grpc_vst_communicatorClient.cpp)
+
+	target_link_libraries(sl-vst-save-while-processing-test PRIVATE
+		OBS::libobs
+		papi_grpc_proto
+		${_REFLECTION}
+		${_GRPC_GRPCPP}
+		${_PROTOBUF_LIBPROTOBUF})
+	target_compile_features(sl-vst-save-while-processing-test PRIVATE cxx_std_17)
+	# Plain CMake properties: set_target_properties_obs() would also install this test.
+	set_target_properties(sl-vst-save-while-processing-test PROPERTIES FOLDER "Tests and Examples" LINK_FLAGS "/ignore:4099")
+	if(TARGET tests)
+		add_dependencies(tests sl-vst-save-while-processing-test)
+	endif()
+
+	add_test(NAME sl-vst-save-while-processing COMMAND sl-vst-save-while-processing-test)
+
+	# Make obs.dll and its dependencies loadable when ctest runs the executable.
+	set(_slvst_test_env "PATH=path_list_prepend:$<TARGET_FILE_DIR:OBS::libobs>")
+	foreach(_dep OBS::w32-pthreads FFmpeg::avformat)
+		if(TARGET ${_dep})
+			list(APPEND _slvst_test_env "PATH=path_list_prepend:$<TARGET_FILE_DIR:${_dep}>")
+		endif()
+	endforeach()
+	set_tests_properties(sl-vst-save-while-processing PROPERTIES
+		LABELS sl-vst
+		TIMEOUT 60
+		ENVIRONMENT_MODIFICATION "${_slvst_test_env}")
+endif()

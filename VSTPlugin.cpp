@@ -26,9 +26,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "cbase64.h"
 #ifdef WIN32
 #include <cstringt.h>
+#include <windows.h>
+
+static BOOL CALLBACK closeErrorPopupWindow(HWND hwnd, LPARAM)
+{
+	PostMessage(hwnd, WM_CLOSE, 0, 0);
+	return TRUE;
+}
 #endif
 #include <functional>
 #include <filesystem>
+#include <chrono>
 
 VSTPlugin::VSTPlugin(obs_source_t *sourceContext) : m_sourceContext{sourceContext}, m_effect{nullptr}, m_is_open{false}
 {
@@ -38,17 +46,44 @@ VSTPlugin::VSTPlugin(obs_source_t *sourceContext) : m_sourceContext{sourceContex
 	int numChannels = VST_MAX_CHANNELS;
 	int blocksize = BLOCK_SIZE;
 
-	m_inputs = (float **)malloc(sizeof(float **) * numChannels);
-	m_outputs = (float **)malloc(sizeof(float **) * numChannels);
+	m_inputs = (float **)malloc(sizeof(float *) * numChannels);
+	m_outputs = (float **)malloc(sizeof(float *) * numChannels);
 
+	// process() sends every channel to the proxy, using m_inputs for channels the
+	// source doesn't have, so these must start out as silence rather than garbage.
 	for (int channel = 0; channel < numChannels; channel++) {
-		m_inputs[channel] = (float *)malloc(sizeof(float *) * blocksize);
-		m_outputs[channel] = (float *)malloc(sizeof(float *) * blocksize);
+		m_inputs[channel] = (float *)calloc(blocksize, sizeof(float));
+		m_outputs[channel] = (float *)calloc(blocksize, sizeof(float));
 	}
 }
 
 VSTPlugin::~VSTPlugin()
 {
+	{
+		ExclusiveLock grd(*this);
+		m_shuttingDown.store(true, std::memory_order_release);
+	}
+
+	while (m_errorPopupThread.joinable() && !m_errorPopupThreadStarted.load(std::memory_order_acquire))
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+	while (m_errorPopupThread.joinable() && m_errorPopupThreadId.load(std::memory_order_acquire) != 0) {
+#ifdef WIN32
+		EnumThreadWindows(m_errorPopupThreadId.load(std::memory_order_acquire), closeErrorPopupWindow, 0);
+#endif
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	if (m_errorPopupThread.joinable())
+		m_errorPopupThread.join();
+
+	while (m_pendingTeardowns.load(std::memory_order_acquire) != 0)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+	for (auto &worker : m_proxyShutdownWorkers) {
+		if (worker.thread.joinable())
+			worker.thread.join();
+	}
+
 	int numChannels = VST_MAX_CHANNELS;
 
 	for (int channel = 0; channel < numChannels; channel++) {
@@ -76,25 +111,26 @@ VSTPlugin::~VSTPlugin()
 
 void VSTPlugin::loadEffectFromPath(std::string path)
 {
+	ExclusiveLock grd(*this);
+
 	if (m_proxyDisconnected || m_effect != nullptr)
 		return;
-
-	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
 
 	blog(LOG_DEBUG, "VST Plug-in: loadEffectFromPath from pluginPath %s ", path.c_str());
 	m_pluginPath = path;
 
-	unloadEffect();
-	loadEffect();
+	unloadEffectLocked();
+	m_loadGeneration++;
+	loadEffectLocked();
 
-	if (!verifyProxy()) {
+	if (!verifyProxyLocked()) {
 		blog(LOG_WARNING, "VST Plug-in: loadEffectFromPath Can't load effect!");
 		return;
 	}
 
 	// Check plug-in's magic number
 	// If incorrect, then the file either was not loaded properly, is not a real VST plug-in, or is otherwise corrupt.
-	if (m_effect->magic != kEffectMagic) {
+	if (m_remote->getEffectMagic() != kEffectMagic) {
 		blog(LOG_WARNING, "VST Plug-in: loadEffectFromPath magic number is bad");
 		return;
 	}
@@ -111,43 +147,89 @@ void VSTPlugin::loadEffectFromPath(std::string path)
 	m_remote->dispatcher(m_effect.get(), effSetBlockSize, 0, blocksize, nullptr, 0.0f, 0);
 	m_remote->dispatcher(m_effect.get(), effMainsChanged, 0, 1, nullptr, 0, 0);
 
-	if (!verifyProxy())
+	if (!verifyProxyLocked())
 		return;
 
 	if (m_openInterfaceWhenActive)
-		openEditor();
+		openEditorLocked();
 }
 
-bool VSTPlugin::verifyProxy(const bool notifyAudioPause /*= false*/)
+void VSTPlugin::showErrorPopupAsync(std::string msg)
 {
-	if (m_effect == nullptr)
+#ifdef WIN32
+	if (m_errorPopupThread.joinable()) {
+		if (!m_errorPopupThreadStarted.load(std::memory_order_acquire) || m_errorPopupThreadId.load(std::memory_order_acquire) != 0)
+			return;
+		m_errorPopupThread.join();
+	}
+	m_errorPopupThreadStarted.store(false, std::memory_order_release);
+	try {
+		m_errorPopupThread = std::thread([this, msg]() {
+			m_errorPopupThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+			m_errorPopupThreadStarted.store(true, std::memory_order_release);
+			::MessageBoxA(NULL, msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL);
+			m_errorPopupThreadId.store(0, std::memory_order_release);
+		});
+	} catch (const std::exception &e) {
+		blog(LOG_ERROR, "VST Plug-in: unable to start error popup thread: %s", e.what());
+	}
+#else
+	blog(LOG_ERROR, "VST Plug-in: %s", msg.c_str());
+#endif
+}
+
+void VSTPlugin::warnIfNotExclusivelyLocked(const char *func) const
+{
+	if (!holdsExclusiveLock())
+		blog(LOG_ERROR, "VST Plug-in: %s called without holding m_effectStatusMutex exclusively", func);
+}
+
+bool VSTPlugin::verifyProxy()
+{
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	return verifyProxyLocked();
+}
+
+// Caller must hold m_effectStatusMutex (shared or exclusive), so this must never lock
+// it itself.
+bool VSTPlugin::verifyProxyLocked()
+{
+	if (m_shuttingDown.load(std::memory_order_acquire) || m_effect == nullptr)
 		return false;
 
 	if (m_proxyDisconnected)
 		return false;
 
 	if (m_remote != nullptr) {
-		m_proxyDisconnected = !m_remote->m_connected;
-
-		if (m_proxyDisconnected) {
-			std::string msg;
-
-			if (notifyAudioPause)
-				msg = (std::filesystem::path(m_pluginPath).filename().string() +
-				       " has stopped working.\n\nThe audio it modifies has paused and will continue after closing this popup but the filter is now disabled. You may restart the application or recreate the filter to enable it again.");
-			else
-				msg = (std::filesystem::path(m_pluginPath).filename().string() +
-				       " has stopped working.\n\nThe filter has been disabled. You may restart the application or recreate the filter to enable it again.");
-
-#ifdef WIN32
-			::MessageBoxA(GetDesktopWindow(), msg.c_str(), "VST Filter Error", MB_ICONERROR | MB_SYSTEMMODAL);
-#endif
-
-			stopProxy();
-			return false;
-		} else {
+		if (m_remote->m_connected)
 			return true;
+
+		bool expected = false;
+		if (m_proxyDisconnected.compare_exchange_strong(expected, true)) {
+			showErrorPopupAsync(
+				std::filesystem::path(m_pluginPath).filename().string() +
+				" has stopped working.\n\nThe filter has been disabled. You may restart the application or recreate the filter to enable it again.");
+
+			const uint64_t generation = m_loadGeneration;
+			m_pendingTeardowns.fetch_add(1, std::memory_order_relaxed);
+			const bool started = startDetachedThread("deferred proxy teardown", [this, generation]() {
+				try {
+					ExclusiveLock grd(*this);
+					if (m_loadGeneration == generation)
+						stopProxy();
+				} catch (...) {
+					blog(LOG_ERROR, "VST Plug-in: deferred proxy teardown failed");
+				}
+				m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
+			});
+			// If the thread never started, its body won't decrement the counter. Don't
+			// tear down here: this can be called from the audio thread, and the proxy is
+			// still cleaned up by the next unloadEffect().
+			if (!started)
+				m_pendingTeardowns.fetch_sub(1, std::memory_order_release);
 		}
+
+		return false;
 	}
 
 	return false;
@@ -164,7 +246,8 @@ void silenceChannel(float **channelData, int numChannels, long numFrames)
 
 obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 {
-	if (!m_effectStatusMutex.try_lock())
+	std::shared_lock<std::shared_mutex> lock(m_effectStatusMutex, std::try_to_lock);
+	if (!lock.owns_lock())
 		return audio;
 
 	if (m_effect != nullptr && m_remote != nullptr) {
@@ -186,10 +269,8 @@ obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 
 			m_remote->processReplacing(m_effect.get(), adata, m_outputs, frames, VST_MAX_CHANNELS);
 
-			if (!verifyProxy(true)) {
-				m_effectStatusMutex.unlock();
+			if (!verifyProxyLocked())
 				return audio;
-			}
 
 			for (size_t c = 0; c < VST_MAX_CHANNELS; c++) {
 				if (audio->data[c] != nullptr) {
@@ -200,13 +281,19 @@ obs_audio_data *VSTPlugin::process(struct obs_audio_data *audio)
 		}
 	}
 
-	m_effectStatusMutex.unlock();
 	return audio;
 }
 
 void VSTPlugin::unloadEffect()
 {
-	std::lock_guard<std::recursive_mutex> grd(m_effectStatusMutex);
+	ExclusiveLock grd(*this);
+	unloadEffectLocked();
+}
+
+// Assumes the caller already holds an exclusive lock on m_effectStatusMutex.
+void VSTPlugin::unloadEffectLocked()
+{
+	warnIfNotExclusivelyLocked(__func__);
 
 	m_windowCreated = false;
 	m_proxyDisconnected = false;
@@ -218,6 +305,12 @@ void VSTPlugin::unloadEffect()
 	}
 
 	stopProxy();
+}
+
+bool VSTPlugin::hasEffect()
+{
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	return m_effect != nullptr;
 }
 
 bool VSTPlugin::isEditorOpen()
@@ -235,6 +328,15 @@ bool VSTPlugin::hasWindowOpen()
 
 void VSTPlugin::openEditor()
 {
+	ExclusiveLock grd(*this);
+	openEditorLocked();
+}
+
+// Assumes the caller already holds an exclusive lock on m_effectStatusMutex.
+void VSTPlugin::openEditorLocked()
+{
+	warnIfNotExclusivelyLocked(__func__);
+
 	if (isProxyDisconnected())
 		return;
 
@@ -248,11 +350,13 @@ void VSTPlugin::openEditor()
 		m_is_open = true;
 	}
 
-	verifyProxy();
+	verifyProxyLocked();
 }
 
 void VSTPlugin::hideEditor()
 {
+	ExclusiveLock grd(*this);
+
 	if (isProxyDisconnected())
 		return;
 
@@ -261,11 +365,13 @@ void VSTPlugin::hideEditor()
 		m_is_open = false;
 	}
 
-	verifyProxy();
+	verifyProxyLocked();
 }
 
 void VSTPlugin::closeEditor()
 {
+	ExclusiveLock grd(*this);
+
 	m_is_open = false;
 
 	if (m_windowCreated && m_effect != nullptr && m_remote != nullptr) {
@@ -273,11 +379,13 @@ void VSTPlugin::closeEditor()
 		m_windowCreated = false;
 	}
 
-	verifyProxy();
+	verifyProxyLocked();
 }
 
 std::string VSTPlugin::getChunk(VstChunkType type)
 {
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+
 	cbase64_encodestate encoder;
 	std::string encodedData;
 
@@ -288,15 +396,25 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 
 	cbase64_init_encodestate(&encoder);
 
-	if (m_effect->flags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
+	const int effectFlags = m_remote->getEffectFlags();
+	if (effectFlags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
 		void *buf = nullptr;
-		intptr_t chunkSize = m_remote->dispatcher(m_effect.get(), effGetChunk, int(type), 0, &buf, 0.0, 0);
+		size_t bufSize = 0;
+		intptr_t chunkSize = m_remote->dispatcher(m_effect.get(), effGetChunk, int(type), 0, &buf, 0.0, 0, &bufSize);
+		// The gRPC client malloc()s a copy of the chunk into buf; free it on every path.
+		std::unique_ptr<void, decltype(&free)> bufOwner(buf, &free);
 
-		if (!verifyProxy())
+		if (!verifyProxyLocked())
 			return "";
 
 		if (!buf || chunkSize == 0) {
 			blog(LOG_WARNING, "VST Plug-in: effGetChunk failed");
+			return "";
+		}
+
+		// chunkSize is what the proxy reported; only bufSize bytes actually arrived.
+		if (chunkSize < 0 || size_t(chunkSize) > bufSize || size_t(chunkSize) > UINT32_MAX) {
+			blog(LOG_WARNING, "VST Plug-in: effGetChunk reported %lld bytes but returned %zu", (long long)chunkSize, bufSize);
 			return "";
 		}
 
@@ -305,15 +423,16 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 		int blockEnd = cbase64_encode_block((const unsigned char *)buf, uint32_t(chunkSize), &encodedData[0], &encoder);
 		cbase64_encode_blockend(&encodedData[blockEnd], &encoder);
 		return encodedData;
-	} else if (!(m_effect->flags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
+	} else if (!(effectFlags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
 		std::vector<float> params;
+		const int numParams = m_remote->getEffectNumParams();
 
-		for (int i = 0; i < m_effect->numParams; i++) {
+		for (int i = 0; i < numParams; i++) {
 			float parameter = m_remote->getParameter(m_effect.get(), i);
 			params.push_back(parameter);
 		}
 
-		if (!verifyProxy())
+		if (!verifyProxyLocked())
 			return "";
 
 		if (!params.empty()) {
@@ -338,6 +457,9 @@ std::string VSTPlugin::getChunk(VstChunkType type)
 
 void VSTPlugin::setChunk(VstChunkType type, std::string &data)
 {
+	// Shared lock -- see getChunk().
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+
 	if (data.size() == 0) {
 		blog(LOG_DEBUG, "VST Plug-in: setChunk with empty data chunk ignored");
 		return;
@@ -356,55 +478,66 @@ void VSTPlugin::setChunk(VstChunkType type, std::string &data)
 	cbase64_decode_block(data.data(), uint32_t(data.size()), (unsigned char *)&decodedData[0], &decoder);
 	data = "";
 
-	if (m_effect->flags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
+	const int effectFlags = m_remote->getEffectFlags();
+	if (effectFlags & effFlagsProgramChunks && type != VstChunkType::Parameter) {
 		auto ret = m_remote->dispatcher(m_effect.get(), effSetChunk, type == VstChunkType::Bank ? 0 : 1, decodedData.length(), &decodedData[0], 0.0,
 						decodedData.length());
-	} else if (!(m_effect->flags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
+	} else if (!(effectFlags & effFlagsProgramChunks) && type == VstChunkType::Parameter) {
 		const char *p_chars = &decodedData[0];
 		const float *p_floats = reinterpret_cast<const float *>(p_chars);
 
 		int size = uint32_t(decodedData.length()) / sizeof(float);
 
 		std::vector<float> params(p_floats, p_floats + size);
+		const int numParams = m_remote->getEffectNumParams();
 
-		if (params.size() != (size_t)m_effect->numParams) {
+		if (params.size() != (size_t)numParams) {
 			blog(LOG_WARNING, "VST Plug-in: setChunk wrong number of params");
 			return;
 		}
 
-		for (int i = 0; i < m_effect->numParams; i++)
-			m_remote->setParameter(m_effect.get(), i, params[i]);
+		// Bound by params.size(), not numParams: every RPC reply (including these
+		// setParameter calls and a concurrent processReplacing) refreshes the cached
+		// metadata.
+		for (size_t i = 0; i < params.size(); i++)
+			m_remote->setParameter(m_effect.get(), int(i), params[i]);
 	}
 
-	verifyProxy();
+	verifyProxyLocked();
 }
 
 void VSTPlugin::setProgram(const int programNumber)
 {
+	// Shared lock -- see getChunk().
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+
 	if (m_effect == nullptr || m_remote == nullptr) {
 		blog(LOG_ERROR, "VST Plug-in: setProgram effect is not ready yet");
 		return;
 	}
 
-	if (programNumber < m_effect->numPrograms) {
+	if (programNumber >= 0 && programNumber < m_remote->getEffectNumPrograms()) {
 		intptr_t ret = m_remote->dispatcher(m_effect.get(), effSetProgram, 0, programNumber, nullptr, 0.0f, 0);
 		blog(LOG_ERROR, "VST Plug-in: setProgram get %lld from effSetProgram", ret);
 	} else {
 		blog(LOG_ERROR, "VST Plug-in: setProgram Failed to load program, number was outside possible program range.");
 	}
 
-	verifyProxy();
+	verifyProxyLocked();
 }
 
 int VSTPlugin::getProgram()
 {
+	// Shared lock -- see getChunk().
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+
 	if (m_effect == nullptr || m_remote == nullptr) {
 		blog(LOG_WARNING, "VST Plug-in: getProgram effect is not ready yet");
 		return 0;
 	}
 
 	intptr_t ret = m_remote->dispatcher(m_effect.get(), effGetProgram, 0, 0, nullptr, 0.0f, 0);
-	verifyProxy();
+	verifyProxyLocked();
 	return static_cast<int>(ret);
 }
 
