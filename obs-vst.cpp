@@ -262,7 +262,7 @@ std::vector<std::string> win32_build_dir_list()
 
 	std::vector<std::string> result(dir_list_size, program_files_path);
 
-	for (int i = 0; i < result.size(); ++i) {
+	for (size_t i = 0; i < result.size(); ++i) {
 		result[i].append(dir_list[i]);
 	}
 
@@ -331,12 +331,12 @@ static void fill_out_plugins(obs_property_t *list)
 
 	std::vector<vst_data> vst_list;
 
-	for (int i = 0; i < dir_list.size(); ++i) {
+	for (size_t i = 0; i < dir_list.size(); ++i) {
 		find_plugins(vst_list, dir_list[i].c_str());
 	}
 
 	obs_property_list_add_string(list, "{Please select a plug-in}", nullptr);
-	for (int i = 0; i < vst_list.size(); ++i) {
+	for (size_t i = 0; i < vst_list.size(); ++i) {
 		obs_property_list_add_string(list, vst_list[i].first.c_str(), vst_list[i].second.c_str());
 	}
 }
