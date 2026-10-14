@@ -1,27 +1,30 @@
-// Regression test: saving filter settings must not interrupt live audio.
+// Regression test: saving filter settings, or opening/hiding/closing the editor,
+// must not interrupt live audio.
 //
-// vst_save() calls getChunk(), which makes blocking RPCs to the proxy. getChunk()
-// takes a shared lifetime lock so process() can continue while settings are
-// saved; changing that lock to exclusive would make process() bypass audio.
+// vst_save() calls getChunk(), and the editor calls send sendHwndMsg RPCs; all of
+// them block on the proxy. They take a shared lifetime lock so process() can
+// continue meanwhile; changing that lock to exclusive would make process() bypass
+// audio.
 // This test runs the real VSTPlugin and grpc_vst_communicatorClient against an
 // in-process fake proxy server:
 //
 //  - an "audio thread" calls process() in a loop; the fake proxy halves every
 //    sample, so a bypassed buffer is easy to spot (1.0 instead of 0.5).
-//  - the main thread runs the same calls as vst_save().
-//  - the fake effGetChunk handler does not reply until the audio thread has made
-//    kBuffersDuringChunk processReplacing calls *during* that effGetChunk. If
-//    process() is blocked by the save, that never happens and the handler times
-//    out, so the test is driven by events rather than sleeps.
-//  - buffers are only counted if the whole process() call happened while an
-//    effGetChunk was blocked in the fake proxy (i.e. while getChunk() held the
+//  - the main thread runs the same calls as vst_save(), then openEditor(),
+//    hideEditor() and closeEditor().
+//  - the fake effGetChunk and sendHwndMsg handlers do not reply until the audio
+//    thread has made kBuffersDuringBlockingCall processReplacing calls *during*
+//    that RPC. If process() is blocked by the caller, that never happens and the
+//    handler times out, so the test is driven by events rather than sleeps.
+//  - buffers are only counted if the whole process() call happened while a
+//    blocking RPC was waiting in the fake proxy (i.e. while the caller held the
 //    lock), so the counts don't depend on thread scheduling.
 //
 // Build with -DBUILD_TESTING=ON and run: ctest -L sl-vst --output-on-failure
 //
-// To confirm the test catches the bug, temporarily make getChunk() take
-// ExclusiveLock instead of std::shared_lock; the test should then fail with
-// timed-out effGetChunk calls and bypassed buffers.
+// To confirm the test catches the bug, temporarily make getChunk() or one of the
+// editor calls take ExclusiveLock instead of std::shared_lock; the test should then
+// fail with timed-out RPCs and bypassed buffers.
 
 #include "../headers/VSTPlugin.h"
 #include "../headers/grpc_vst_communicatorClient.h"
@@ -48,9 +51,9 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
-constexpr int kBuffersDuringChunk = 20;
+constexpr int kBuffersDuringBlockingCall = 20;
 // Only reached if the test is failing; generous so a slow machine can't fail it.
-constexpr auto kChunkTimeout = std::chrono::seconds(10);
+constexpr auto kBlockingCallTimeout = std::chrono::seconds(10);
 constexpr float kInputSample = 1.0f;
 constexpr float kProcessedSample = 0.5f;
 
@@ -68,9 +71,10 @@ class FakeVstProxy final : public grpc_vst_communicator::Service {
 public:
 	std::atomic<int> processCalls{0};
 	std::atomic<int> chunkCalls{0};
-	std::atomic<int> chunkTimeouts{0};
-	// True while an effGetChunk handler is waiting, so getChunk() is inside its RPC.
-	std::atomic<bool> chunkInFlight{false};
+	std::atomic<int> hwndMsgCalls{0};
+	std::atomic<int> blockingTimeouts{0};
+	// True while a blocking handler is waiting, so the caller is inside its RPC.
+	std::atomic<bool> blockingCallInFlight{false};
 	// Report a chunk size larger than the data actually sent, like a buggy proxy.
 	std::atomic<bool> overstateChunkSize{false};
 
@@ -84,19 +88,7 @@ public:
 			reply->set_returnval(int64_t(chunk.size() + 4096));
 		} else if (request->param1() == effGetChunk) {
 			chunkCalls++;
-
-			// Set before taking the snapshot below; see the processedDuringChunk check.
-			chunkInFlight = true;
-			const int start = processCalls.load();
-			const auto deadline = Clock::now() + kChunkTimeout;
-			while (processCalls.load() - start < kBuffersDuringChunk) {
-				if (Clock::now() > deadline) {
-					chunkTimeouts++;
-					break;
-				}
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			}
-			chunkInFlight = false;
+			waitForAudio();
 
 			const std::string chunk = "fake-chunk-data";
 			reply->set_ptr_data(chunk);
@@ -146,12 +138,32 @@ public:
 
 	grpc::Status com_grpc_sendHwndMsg(grpc::ServerContext *, const grpc_sendHwndMsg_Request *, grpc_sendHwndMsg_Reply *) override
 	{
+		hwndMsgCalls++;
+		waitForAudio();
 		return grpc::Status::OK;
 	}
 
 	grpc::Status com_grpc_stopServer(grpc::ServerContext *, const grpc_stopServer_Request *, grpc_stopServer_Reply *) override { return grpc::Status::OK; }
 
 private:
+	// Holds the RPC open until the audio thread has made kBuffersDuringBlockingCall
+	// processReplacing calls, or the timeout passes.
+	void waitForAudio()
+	{
+		// Set before taking the snapshot below; see the processedDuringBlockingCall check.
+		blockingCallInFlight = true;
+		const int start = processCalls.load();
+		const auto deadline = Clock::now() + kBlockingCallTimeout;
+		while (processCalls.load() - start < kBuffersDuringBlockingCall) {
+			if (Clock::now() > deadline) {
+				blockingTimeouts++;
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		blockingCallInFlight = false;
+	}
+
 	// Every reply refreshes the client's cached metadata, so all of them must
 	// report program-chunk support or getChunk() would stop calling effGetChunk.
 	template<typename Reply> static void fillMetadata(Reply *reply)
@@ -194,8 +206,8 @@ namespace {
 
 struct AudioStats {
 	std::atomic<int> processed{0};
-	std::atomic<int> processedDuringChunk{0};
-	std::atomic<int> bypassedDuringChunk{0};
+	std::atomic<int> processedDuringBlockingCall{0};
+	std::atomic<int> bypassedDuringBlockingCall{0};
 };
 
 void runAudioThread(VSTPlugin &plugin, const FakeVstProxy &proxy, std::atomic<bool> &stop, AudioStats &stats)
@@ -211,9 +223,9 @@ void runAudioThread(VSTPlugin &plugin, const FakeVstProxy &proxy, std::atomic<bo
 		audio.data[1] = reinterpret_cast<uint8_t *>(right.data());
 		audio.frames = BLOCK_SIZE;
 
-		const bool chunkBefore = proxy.chunkInFlight.load();
+		const bool blockingBefore = proxy.blockingCallInFlight.load();
 		plugin.process(&audio);
-		const bool chunkAfter = proxy.chunkInFlight.load();
+		const bool blockingAfter = proxy.blockingCallInFlight.load();
 
 		bool processed = true;
 		for (int i = 0; i < BLOCK_SIZE; i++) {
@@ -226,9 +238,9 @@ void runAudioThread(VSTPlugin &plugin, const FakeVstProxy &proxy, std::atomic<bo
 		if (processed)
 			stats.processed++;
 
-		// Only count calls that ran entirely while getChunk() was inside its RPC.
-		if (chunkBefore && chunkAfter)
-			(processed ? stats.processedDuringChunk : stats.bypassedDuringChunk)++;
+		// Only count calls that ran entirely while the caller was inside its RPC.
+		if (blockingBefore && blockingAfter)
+			(processed ? stats.processedDuringBlockingCall : stats.bypassedDuringBlockingCall)++;
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -265,7 +277,7 @@ int main()
 
 		// Make sure audio is actually being processed before the save starts, so
 		// a broken setup fails here with a clear message instead of later.
-		const auto warmupDeadline = Clock::now() + kChunkTimeout;
+		const auto warmupDeadline = Clock::now() + kBlockingCallTimeout;
 		while (stats.processed < 5 && Clock::now() < warmupDeadline)
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		CHECK(stats.processed >= 5);
@@ -276,24 +288,40 @@ int main()
 		const std::string parameter = plugin.getChunk(VstChunkType::Parameter);
 		const bool proxyOk = plugin.verifyProxy();
 
+		// Opening sends WM_USER_CREATE_WINDOW and WM_USER_SHOW the first time; hide and
+		// close send one message each.
+		plugin.openEditor();
+		const bool openedEditor = plugin.hasWindowOpen();
+		plugin.hideEditor();
+		const bool hidEditor = !plugin.isEditorOpen();
+		plugin.closeEditor();
+		const bool closedEditor = !plugin.hasWindowOpen();
+
 		stop = true;
 		audioThread.join();
 
-		std::printf("effGetChunk calls: %d (timed out: %d)\n", proxy.chunkCalls.load(), proxy.chunkTimeouts.load());
-		std::printf("buffers during effGetChunk: %d processed, %d bypassed\n", stats.processedDuringChunk.load(), stats.bypassedDuringChunk.load());
+		const int blockingCalls = proxy.chunkCalls + proxy.hwndMsgCalls;
+		std::printf("blocking RPCs: %d effGetChunk, %d sendHwndMsg (timed out: %d)\n", proxy.chunkCalls.load(), proxy.hwndMsgCalls.load(),
+			    proxy.blockingTimeouts.load());
+		std::printf("buffers during blocking RPCs: %d processed, %d bypassed\n", stats.processedDuringBlockingCall.load(),
+			    stats.bypassedDuringBlockingCall.load());
 
 		CHECK(!bank.empty());
 		CHECK(!program.empty());
 		CHECK(parameter.empty()); // program-chunk plug-ins don't save a parameter chunk
 		CHECK(proxyOk);
+		CHECK(openedEditor);
+		CHECK(hidEditor);
+		CHECK(closedEditor);
 		CHECK(proxy.chunkCalls == 2);
-		CHECK(proxy.chunkTimeouts == 0);
-		// Each effGetChunk waits for kBuffersDuringChunk server-side calls. The audio
-		// thread makes them one at a time, so all but the first (which may have started
-		// before chunkInFlight was set) and the last (which may return after it was
-		// cleared) ran entirely inside the window.
-		CHECK(stats.processedDuringChunk >= 2 * (kBuffersDuringChunk - 2));
-		CHECK(stats.bypassedDuringChunk == 0);
+		CHECK(proxy.hwndMsgCalls == 4);
+		CHECK(proxy.blockingTimeouts == 0);
+		// Each blocking RPC waits for kBuffersDuringBlockingCall server-side calls. The
+		// audio thread makes them one at a time, so all but the first (which may have
+		// started before blockingCallInFlight was set) and the last (which may return
+		// after it was cleared) ran entirely inside the window.
+		CHECK(stats.processedDuringBlockingCall >= blockingCalls * (kBuffersDuringBlockingCall - 2));
+		CHECK(stats.bypassedDuringBlockingCall == 0);
 
 		// getChunk() must not read past the data the proxy actually sent.
 		proxy.overstateChunkSize = true;
@@ -305,7 +333,7 @@ int main()
 	server->Shutdown();
 
 	if (g_failures == 0) {
-		std::printf("PASSED: audio kept processing during save\n");
+		std::printf("PASSED: audio kept processing during save and editor open/hide/close\n");
 	} else {
 		std::fprintf(stderr, "%d check(s) failed\n", g_failures);
 		result = 1;

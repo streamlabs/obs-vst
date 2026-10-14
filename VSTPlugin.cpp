@@ -328,14 +328,16 @@ bool VSTPlugin::hasWindowOpen()
 
 void VSTPlugin::openEditor()
 {
-	ExclusiveLock grd(*this);
+	// Shared lock so process() keeps running while the editor opens -- see getChunk().
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
 	openEditorLocked();
 }
 
-// Assumes the caller already holds an exclusive lock on m_effectStatusMutex.
+// Caller must hold m_effectStatusMutex (shared or exclusive), so this must never lock
+// it itself.
 void VSTPlugin::openEditorLocked()
 {
-	warnIfNotExclusivelyLocked(__func__);
+	std::lock_guard<std::mutex> editorGrd(m_editorMutex);
 
 	if (isProxyDisconnected())
 		return;
@@ -355,7 +357,9 @@ void VSTPlugin::openEditorLocked()
 
 void VSTPlugin::hideEditor()
 {
-	ExclusiveLock grd(*this);
+	// Shared lock -- see openEditor().
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	std::lock_guard<std::mutex> editorGrd(m_editorMutex);
 
 	if (isProxyDisconnected())
 		return;
@@ -370,7 +374,9 @@ void VSTPlugin::hideEditor()
 
 void VSTPlugin::closeEditor()
 {
-	ExclusiveLock grd(*this);
+	// Shared lock -- see openEditor().
+	std::shared_lock<std::shared_mutex> grd(m_effectStatusMutex);
+	std::lock_guard<std::mutex> editorGrd(m_editorMutex);
 
 	m_is_open = false;
 

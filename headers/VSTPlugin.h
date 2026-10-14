@@ -107,8 +107,15 @@ private:
 
 	int32_t chooseProxyPort();
 
-	bool m_is_open{false};
-	bool m_windowCreated{false};
+	// Editor state. Changed under m_editorMutex while holding m_effectStatusMutex (shared
+	// is enough), or under the exclusive lock alone. Atomic so isEditorOpen() and
+	// hasWindowOpen() can read it without locking.
+	std::atomic<bool> m_is_open{false};
+	std::atomic<bool> m_windowCreated{false};
+	// Serializes the editor calls with each other. They only take m_effectStatusMutex
+	// shared so process() keeps running while their RPCs are in flight. Lock order:
+	// m_effectStatusMutex first, then this.
+	std::mutex m_editorMutex;
 	bool m_openInterfaceWhenActive{false};
 
 	float **m_inputs{nullptr};
