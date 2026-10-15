@@ -32,8 +32,12 @@ using grpc::Channel;
 using grpc::ClientContext;
 using grpc::Status;
 
-AEffect *VSTPlugin::loadEffect()
+// Assumes the caller already holds an exclusive lock on m_effectStatusMutex
+// (loadEffectFromPath() does), since this replaces m_effect and m_remote.
+AEffect *VSTPlugin::loadEffectLocked()
 {
+	warnIfNotExclusivelyLocked(__func__);
+
 	blog(LOG_DEBUG, "VST Plug-in: starting win-streamlabs-vst.exe for '%s'", m_pluginPath.c_str());
 
 	wchar_t *wpath;
@@ -63,11 +67,8 @@ AEffect *VSTPlugin::loadEffect()
 		blog(LOG_ERROR, "VST Plug-in: Crashed while launching vst server");
 	}
 	if (!launched) {
-		::MessageBoxA(NULL,
-			      (std::filesystem::path(m_pluginPath).filename().string() +
-			       " failed to launch.\n\n You may restart the application or recreate the filter to try again.")
-				      .c_str(),
-			      "VST Filter Error", MB_ICONERROR | MB_TOPMOST);
+		showErrorPopupAsync(std::filesystem::path(m_pluginPath).filename().string() +
+				    " failed to launch.\n\n You may restart the application or recreate the filter to try again.");
 
 		blog(LOG_ERROR, "VST Plug-in: can't start vst server, GetLastError = %d", GetLastError());
 		m_effect = nullptr;
@@ -78,7 +79,7 @@ AEffect *VSTPlugin::loadEffect()
 		grpc::CreateChannel("localhost:" + std::to_string(portNumber), grpc::InsecureChannelCredentials()));
 	m_remote->updateAEffect(m_effect.get());
 
-	if (!verifyProxy())
+	if (!verifyProxyLocked())
 		return nullptr;
 
 	return m_effect.get();
@@ -114,8 +115,14 @@ int32_t VSTPlugin::chooseProxyPort()
 	return result;
 }
 
+// Assumes the caller already holds an exclusive lock on m_effectStatusMutex --
+// either unloadEffectLocked() (called from unloadEffect(), which locks) or the
+// deferred teardown thread spawned by verifyProxyLocked() (which locks before calling
+// this). std::shared_mutex is not recursive, so this must not lock it again.
 void VSTPlugin::stopProxy()
 {
+	warnIfNotExclusivelyLocked(__func__);
+
 	if (m_effect == nullptr)
 		return;
 
@@ -126,21 +133,45 @@ void VSTPlugin::stopProxy()
 
 	m_remote->stopServer(movedPtr.get());
 
-	// Wait for graceful end in a thread, don't block here
-	std::thread(
-		[](HANDLE hProcess, HANDLE hThread, INT nWaitTime) {
-			// Might have to kill it, wait a moment but note that wait time is 0 if tcp connection already isn't valid
-			if (WaitForSingleObject(hProcess, nWaitTime) == WAIT_TIMEOUT) {
-				if (TerminateProcess(hProcess, 0) == FALSE) {
-					blog(LOG_ERROR, "VST Plug-in: process is stuck somehow cannot terminate, GetLastError = %d", GetLastError());
-				}
+	auto waitForExit = [hProcess = m_winServer.hProcess, hThread = m_winServer.hThread, nWaitTime = m_proxyDisconnected ? 3000 : 0]() {
+		// Might have to kill it, wait a moment but note that wait time is 0 if tcp connection already isn't valid
+		if (WaitForSingleObject(hProcess, nWaitTime) == WAIT_TIMEOUT) {
+			if (TerminateProcess(hProcess, 0) == FALSE) {
+				blog(LOG_ERROR, "VST Plug-in: process is stuck somehow cannot terminate, GetLastError = %d", GetLastError());
 			}
+		}
 
-			CloseHandle(hProcess);
-			CloseHandle(hThread);
-		},
-		m_winServer.hProcess, m_winServer.hThread, m_proxyDisconnected ? 3000 : 0)
-		.detach();
+		CloseHandle(hProcess);
+		CloseHandle(hThread);
+	};
+
+	// Join workers from earlier stops that have finished, so repeated reload/disconnect
+	// cycles don't keep a thread handle per cycle. A worker whose thread never started
+	// is dropped too.
+	for (auto it = m_proxyShutdownWorkers.begin(); it != m_proxyShutdownWorkers.end();) {
+		if (!it->thread.joinable() || it->done->load(std::memory_order_acquire)) {
+			if (it->thread.joinable())
+				it->thread.join();
+			it = m_proxyShutdownWorkers.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	// Wait for graceful end in a thread, don't block here. If no thread can be started,
+	// wait here instead so the process still gets stopped and its handles closed.
+	try {
+		// Add the entry before starting the thread, so nothing that can throw happens
+		// while a running thread isn't owned by the vector yet.
+		ProxyShutdownWorker &worker = m_proxyShutdownWorkers.emplace_back();
+		worker.thread = std::thread([waitForExit, done = worker.done.get()]() {
+			waitForExit();
+			done->store(true, std::memory_order_release);
+		});
+	} catch (const std::exception &e) {
+		blog(LOG_ERROR, "VST Plug-in: unable to start proxy shutdown thread: %s", e.what());
+		waitForExit();
+	}
 
 	m_winServer = {};
 }
