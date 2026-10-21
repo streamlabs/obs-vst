@@ -294,3 +294,16 @@ if(WIN32 AND BUILD_TESTING)
 		TIMEOUT 60
 		ENVIRONMENT_MODIFICATION "${_slvst_test_env}")
 endif()
+
+# The prebuilt gRPC/protobuf (and crashpad) libraries are release-only (/MD,
+# _ITERATOR_DEBUG_LEVEL=0), so everything linking them must use the release CRT,
+# even in Debug builds, or the link fails with LNK2038.
+if(WIN32)
+	foreach(_slvst_target papi_grpc_proto obs-vst win-streamlabs-vst sl-vst-save-while-processing-test)
+		if(TARGET ${_slvst_target})
+			set_target_properties(${_slvst_target} PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+			# OBS defines _DEBUG globally in Debug, which makes the CRT/STL headers select the debug runtime.
+			target_compile_options(${_slvst_target} PRIVATE $<$<CONFIG:Debug>:/U_DEBUG>)
+		endif()
+	endforeach()
+endif()
