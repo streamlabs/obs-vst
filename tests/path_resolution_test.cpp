@@ -184,6 +184,19 @@ int main()
 		CHECK(u.loads() == 1);
 	}
 
+	// Without ProgramFiles nothing is enumerated or resolved, and nothing crashes.
+	{
+		_putenv_s("ProgramFiles", "");
+		CHECK_EQ(resolve("Foo.dll"), "<not found>");
+		CHECK_EQ(resolve("Bar.dll"), bar);
+
+		Update u;
+		u.run("Foo.dll");
+		CHECK_EQ(u.storedPath(), "Foo.dll");
+		CHECK(!u.plugin->hasEffect());
+		CHECK(u.loads() == 0);
+		_putenv_s("ProgramFiles", programFiles.string().c_str());
+	}
 	fs::remove_all(root);
 
 	if (g_failures == 0)

@@ -277,12 +277,11 @@ std::vector<std::string> win32_build_dir_list()
 	const char *dir_list[] = {"/Steinberg/VstPlugins/", "/Common Files/Steinberg/Shared Components/", "/Common Files/VST2/", "/Common Files/VSTPlugins/",
 				  "/VSTPlugins/"};
 
-	const int dir_list_size = sizeof(dir_list) / sizeof(dir_list[0]);
+	std::vector<std::string> result;
 
-	std::vector<std::string> result(dir_list_size, program_files_path);
-
-	for (size_t i = 0; i < result.size(); ++i) {
-		result[i].append(dir_list[i]);
+	if (program_files_path) {
+		for (const char *dir : dir_list)
+			result.push_back(std::string(program_files_path) + dir);
 	}
 
 	const char *common_files_path = getenv("CommonProgramFiles");
