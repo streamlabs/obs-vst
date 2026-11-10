@@ -24,6 +24,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <util/dstr.h>
 
 #include "headers/VSTPlugin.h"
+#ifdef WIN32
+#include "headers/vst-path.h"
+#endif
 
 #define OPEN_VST_SETTINGS "open_vst_settings"
 #define CLOSE_VST_SETTINGS "close_vst_settings"
@@ -43,6 +46,7 @@ MODULE_EXPORT const char *obs_module_description(void)
 }
 
 static void vst_save(void *data, obs_data_t *settings);
+static bool resolve_plugin_path(const std::string &path, std::string &resolved);
 
 static bool open_editor_button_clicked(obs_properties_t *props, obs_property_t *property, void *data)
 {
@@ -90,10 +94,25 @@ static void vst_update(void *data, obs_data_t *settings)
 	VSTPlugin *vstPlugin = (VSTPlugin *)data;
 
 	vstPlugin->setOpenInterfaceWhenActive(obs_data_get_bool(settings, OPEN_WHEN_ACTIVE_VST_SETTINGS));
-	const char *path = obs_data_get_string(settings, "plugin_path");
+	const char *requested_path = obs_data_get_string(settings, "plugin_path");
 
-	if (!path || !strcmp(path, ""))
+	if (!requested_path || !strcmp(requested_path, ""))
 		return;
+
+	// Resolve before comparing with the loaded path, so updating again with the original
+	// settings doesn't reload the plugin.
+	std::string resolved_path;
+	if (!resolve_plugin_path(requested_path, resolved_path)) {
+		blog(LOG_WARNING, "VST Plug-in: '%s' is not an installed VST plug-in", requested_path);
+		vstPlugin->unloadEffect();
+		vst_save(data, settings);
+		return;
+	}
+
+	if (resolved_path != requested_path)
+		obs_data_set_string(settings, "plugin_path", resolved_path.c_str());
+
+	const char *path = resolved_path.c_str();
 
 	bool load_vst = false;
 
@@ -266,6 +285,10 @@ std::vector<std::string> win32_build_dir_list()
 		result[i].append(dir_list[i]);
 	}
 
+	const char *common_files_path = getenv("CommonProgramFiles");
+	if (common_files_path)
+		result.push_back(std::string(common_files_path) + "/Steinberg/VST2/");
+
 	return result;
 }
 
@@ -307,6 +330,62 @@ static void find_plugins(std::vector<vst_data> &plugin_list, const char *dir_nam
 
 	os_closedir(dir);
 }
+
+#ifdef WIN32
+static std::wstring to_wide(const std::string &utf8)
+{
+	wchar_t *wide = nullptr;
+	os_utf8_to_wcs_ptr(utf8.c_str(), 0, &wide);
+	std::wstring result = wide ? wide : L"";
+	bfree(wide);
+	return result;
+}
+
+static std::string to_utf8(const std::wstring &wide)
+{
+	char *utf8 = nullptr;
+	os_wcs_to_utf8_ptr(wide.c_str(), 0, &utf8);
+	std::string result = utf8 ? utf8 : "";
+	bfree(utf8);
+	return result;
+}
+
+static bool find_installed_plugin(const std::wstring &name, std::string &found)
+{
+	std::vector<vst_data> vst_list;
+	for (const std::string &dir : win32_build_dir_list())
+		find_plugins(vst_list, dir.c_str());
+
+	const std::string utf8_name = to_utf8(name);
+	for (const vst_data &vst : vst_list) {
+		if (astrcmpi(vst.first.c_str(), utf8_name.c_str()) == 0) {
+			found = vst.second;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Bare names, and full paths that aren't local, are looked up in the approved directories.
+static bool resolve_plugin_path(const std::string &path, std::string &resolved)
+{
+	const std::wstring wide_path = to_wide(path);
+
+	if (validate_vst_path(wide_path, nullptr)) {
+		resolved = path;
+		return true;
+	}
+
+	const std::wstring name = vst_path_basename(wide_path);
+	return is_bare_vst_name(name) && find_installed_plugin(name, resolved);
+}
+#else
+static bool resolve_plugin_path(const std::string &path, std::string &resolved)
+{
+	resolved = path;
+	return true;
+}
+#endif
 
 static void fill_out_plugins(obs_property_t *list)
 {

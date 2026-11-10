@@ -27,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <filesystem>
 
 #include "../headers/grpc_vst_communicatorClient.h"
+#include "../headers/vst-path.h"
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -43,6 +44,13 @@ AEffect *VSTPlugin::loadEffectLocked()
 	wchar_t *wpath;
 	os_utf8_to_wcs_ptr(m_pluginPath.c_str(), 0, &wpath);
 
+	std::wstring normalizedPath;
+	if (!validate_vst_path(wpath, &normalizedPath)) {
+		blog(LOG_WARNING, "VST Plug-in: refusing to load '%s', not a local plug-in path", m_pluginPath.c_str());
+		m_effect = nullptr;
+		return nullptr;
+	}
+
 	const int32_t portNumber = chooseProxyPort();
 
 	STARTUPINFOW si;
@@ -51,7 +59,7 @@ AEffect *VSTPlugin::loadEffectLocked()
 
 	m_effect = std::make_unique<AEffect>();
 	std::wstring startparams =
-		L"streamlabs_vst.exe \"" + std::wstring(wpath) + L"\" " + std::to_wstring(portNumber) + L" " + std::to_wstring(GetCurrentProcessId());
+		L"streamlabs_vst.exe \"" + normalizedPath + L"\" " + std::to_wstring(portNumber) + L" " + std::to_wstring(GetCurrentProcessId());
 
 	BOOL launched = FALSE;
 	try {

@@ -2,6 +2,7 @@
 
 #include "..\vst_header\aeffectx.h"
 #include "..\headers\StlBuffer.h"
+#include "..\headers\vst-path.h"
 
 #include "obs_vst_api.grpc.pb.h"
 
@@ -227,8 +228,12 @@ bool VstModule::start()
 
 	typedef AEffect *(*vstPluginMain)(audioMasterCallback audioMaster);
 
-	::SetDllDirectoryW(std::filesystem::path(m_modulePath).remove_filename().c_str());
-	m_dllHandle = ::LoadLibraryW(m_modulePath.c_str());
+	std::wstring modulePath;
+	if (!validate_vst_path(m_modulePath, &modulePath))
+		return false;
+
+	::SetDllDirectoryW(std::filesystem::path(modulePath).remove_filename().c_str());
+	m_dllHandle = ::LoadLibraryW(modulePath.c_str());
 	::SetDllDirectoryW(nullptr);
 
 	if (m_dllHandle == NULL)
