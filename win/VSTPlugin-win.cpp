@@ -45,7 +45,9 @@ AEffect *VSTPlugin::loadEffectLocked()
 	os_utf8_to_wcs_ptr(m_pluginPath.c_str(), 0, &wpath);
 
 	std::wstring normalizedPath;
-	if (!validate_vst_path(wpath, &normalizedPath)) {
+	const bool valid = validate_vst_path(wpath, &normalizedPath);
+	bfree(wpath);
+	if (!valid) {
 		blog(LOG_WARNING, "VST Plug-in: refusing to load '%s', not a local plug-in path", m_pluginPath.c_str());
 		m_effect = nullptr;
 		return nullptr;
