@@ -59,9 +59,15 @@ AEffect *VSTPlugin::loadEffectLocked()
 	memset(&si, NULL, sizeof(si));
 	si.cb = sizeof(si);
 
+	std::wstring proxyArguments;
+	if (!make_proxy_arguments(normalizedPath, portNumber, GetCurrentProcessId(), &proxyArguments)) {
+		blog(LOG_WARNING, "VST Plug-in: refusing to load '%s', can't pass it to the proxy", m_pluginPath.c_str());
+		m_effect = nullptr;
+		return nullptr;
+	}
+
 	m_effect = std::make_unique<AEffect>();
-	std::wstring startparams =
-		L"streamlabs_vst.exe \"" + normalizedPath + L"\" " + std::to_wstring(portNumber) + L" " + std::to_wstring(GetCurrentProcessId());
+	std::wstring startparams = L"streamlabs_vst.exe " + proxyArguments;
 
 	BOOL launched = FALSE;
 	try {

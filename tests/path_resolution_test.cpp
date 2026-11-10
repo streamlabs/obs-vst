@@ -127,6 +127,8 @@ int main()
 	CHECK_EQ(resolve("\\\\host\\share\\Missing.dll"), "<not found>");
 	CHECK_EQ(resolve("..\\Missing.dll"), "<not found>");
 	CHECK_EQ(resolve("\\\\host\\share\\Foo.exe"), "<not found>");
+	CHECK_EQ(resolve("C:\\Plugins\\Foo\".dll"), "<not found>");
+	CHECK_EQ(resolve("C:\\Plugins\\Foo.dll\" 80 1 \"x.dll"), "<not found>");
 
 	// A bare name loads once and is written back as the dropdown value.
 	{

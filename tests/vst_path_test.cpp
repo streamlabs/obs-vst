@@ -133,6 +133,42 @@ void testBasename()
 	CHECK(vst_path_basename(L"C:\\a\\") == L"");
 }
 
+void testProxyArgumentsRoundTrip()
+{
+	const wchar_t *paths[] = {L"C:\\Program Files\\VSTPlugins\\Foo.dll", L"D:\\a b\\c  d\\Foo Bar.dll", L"C:\\Plugins\\Foo.dll"};
+
+	for (const wchar_t *path : paths) {
+		std::wstring arguments;
+		CHECK(make_proxy_arguments(path, 51234, 4321, &arguments));
+
+		std::wstring parsedPath, parsedPort, parsedPid;
+		CHECK(parse_proxy_arguments(arguments.c_str(), &parsedPath, &parsedPort, &parsedPid));
+		CHECK(parsedPath == path);
+		CHECK(parsedPort == L"51234");
+		CHECK(parsedPid == L"4321");
+	}
+}
+
+void testProxyArgumentsRejectQuotes()
+{
+	std::wstring arguments;
+	CHECK(!make_proxy_arguments(L"C:\\Plugins\\Foo\".dll", 1234, 1, &arguments));
+	CHECK(!make_proxy_arguments(L"C:\\Plugins\\Foo.dll\" 80 1 \"x", 1234, 1, &arguments));
+	CHECK(!make_proxy_arguments(L"", 1234, 1, &arguments));
+}
+
+void testProxyRequiresExactlyThreeArguments()
+{
+	std::wstring path, port, pid;
+	CHECK(parse_proxy_arguments(L"\"C:\\a b\\Foo.dll\" 1234 99", &path, &port, &pid));
+	CHECK(!parse_proxy_arguments(L"", &path, &port, &pid));
+	CHECK(!parse_proxy_arguments(L"\"C:\\Foo.dll\"", &path, &port, &pid));
+	CHECK(!parse_proxy_arguments(L"\"C:\\Foo.dll\" 1234", &path, &port, &pid));
+	CHECK(!parse_proxy_arguments(L"\"C:\\Foo.dll\" 1234 99 extra", &path, &port, &pid));
+	// What a quote in the path used to do: the path ends early and the rest become the arguments.
+	CHECK(!parse_proxy_arguments(L"\"C:\\Foo\" 80 1 \".dll\" 1234 99", &path, &port, &pid));
+}
+
 } // namespace
 
 int main()
@@ -144,6 +180,9 @@ int main()
 	testOtherUnsafeFormsAreRejected();
 	testBareNames();
 	testBasename();
+	testProxyArgumentsRoundTrip();
+	testProxyArgumentsRejectQuotes();
+	testProxyRequiresExactlyThreeArguments();
 
 	if (g_failures == 0)
 		std::printf("vst path validation: all checks passed\n");

@@ -1,6 +1,7 @@
 #include "headers/vst-path.h"
 
 #include <windows.h>
+#include <shellapi.h>
 
 namespace {
 
@@ -68,4 +69,31 @@ bool validate_vst_path(const std::wstring &path, std::wstring *normalized)
 	if (normalized)
 		*normalized = full;
 	return true;
+}
+
+bool make_proxy_arguments(const std::wstring &path, int32_t port, unsigned long ownerPid, std::wstring *arguments)
+{
+	if (path.empty() || path.find(L'"') != std::wstring::npos)
+		return false;
+
+	*arguments = L"\"" + path + L"\" " + std::to_wstring(port) + L" " + std::to_wstring(ownerPid);
+	return true;
+}
+
+bool parse_proxy_arguments(const wchar_t *commandLine, std::wstring *path, std::wstring *port, std::wstring *ownerPid)
+{
+	int argc = 0;
+	LPWSTR *argv = CommandLineToArgvW(commandLine, &argc);
+	if (!argv)
+		return false;
+
+	const bool exact = argc == 3;
+	if (exact) {
+		*path = argv[0];
+		*port = argv[1];
+		*ownerPid = argv[2];
+	}
+
+	LocalFree(argv);
+	return exact;
 }
