@@ -86,6 +86,7 @@ int main()
 	touch(programFiles / "VSTPlugins" / "sub" / "Foo.dll");
 	touch(commonFiles / "Steinberg" / "VST2" / "Bar.dll");
 	touch(root / "elsewhere" / "Local.dll");
+	touch(programFiles / "VSTPlugins" / L"\u00dcber.dll");
 
 	_putenv_s("ProgramFiles", programFiles.string().c_str());
 	_putenv_s("CommonProgramFiles", commonFiles.string().c_str());
@@ -109,6 +110,10 @@ int main()
 	CHECK_EQ(resolve("Foo.dll"), foo);
 	CHECK_EQ(resolve("foo.DLL"), foo);
 	CHECK_EQ(resolve("Bar.dll"), bar);
+	CHECK_EQ(resolve("\xC3\xBC"
+			 "ber.dll"),
+		 programFiles.string() + "/VSTPlugins//\xC3\x9C"
+					 "ber.dll");
 	CHECK_EQ(resolve("Missing.dll"), "<not found>");
 	CHECK_EQ(resolve("Foo"), "<not found>");
 

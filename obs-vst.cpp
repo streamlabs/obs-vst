@@ -340,24 +340,15 @@ static std::wstring to_wide(const std::string &utf8)
 	return result;
 }
 
-static std::string to_utf8(const std::wstring &wide)
-{
-	char *utf8 = nullptr;
-	os_wcs_to_utf8_ptr(wide.c_str(), 0, &utf8);
-	std::string result = utf8 ? utf8 : "";
-	bfree(utf8);
-	return result;
-}
-
 static bool find_installed_plugin(const std::wstring &name, std::string &found)
 {
 	std::vector<vst_data> vst_list;
 	for (const std::string &dir : win32_build_dir_list())
 		find_plugins(vst_list, dir.c_str());
 
-	const std::string utf8_name = to_utf8(name);
 	for (const vst_data &vst : vst_list) {
-		if (astrcmpi(vst.first.c_str(), utf8_name.c_str()) == 0) {
+		const std::wstring candidate = to_wide(vst.first);
+		if (CompareStringOrdinal(candidate.c_str(), -1, name.c_str(), -1, TRUE) == CSTR_EQUAL) {
 			found = vst.second;
 			return true;
 		}
