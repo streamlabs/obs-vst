@@ -308,11 +308,11 @@ if(WIN32 AND BUILD_TESTING)
 	add_test(NAME sl-vst-path-validation COMMAND sl-vst-path-validation-test)
 	set_tests_properties(sl-vst-path-validation PROPERTIES LABELS sl-vst TIMEOUT 60)
 
-	# Includes obs-vst.cpp to drive vst_update() with a bare plug-in name.
+	# Includes obs-vst.cpp to drive vst_update() with a bare plug-in name. The test supplies its own
+	# loadEffectLocked() instead of win/VSTPlugin-win.cpp, so no proxy is launched.
 	add_executable(sl-vst-path-resolution-test
 		tests/path_resolution_test.cpp
 		VSTPlugin.cpp
-		win/VSTPlugin-win.cpp
 		vst-path.cpp
 		grpc_vst_communicatorClient.cpp)
 

@@ -72,8 +72,11 @@ AEffect *VSTPlugin::loadEffectLocked()
 	BOOL launched = FALSE;
 	try {
 		const char *module_path = obs_get_module_binary_path(obs_current_module());
-		if (!module_path)
+		if (!module_path) {
+			blog(LOG_ERROR, "VST Plug-in: can't find the module path to start vst server");
+			m_effect = nullptr;
 			return nullptr;
+		}
 
 		std::wstring process_path = std::filesystem::u8path(module_path).remove_filename().wstring() + L"/win-streamlabs-vst.exe";
 
