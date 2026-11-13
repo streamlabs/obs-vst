@@ -38,6 +38,8 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -330,6 +332,17 @@ int main()
 		VSTPluginTestAccess::detachProxy(plugin);
 	}
 
+	// A launch that can't happen (no module binary path in this process) leaves nothing loaded.
+	{
+		const std::filesystem::path dll = std::filesystem::temp_directory_path() / "sl-vst-failed-launch.dll";
+		std::ofstream(dll, std::ios::binary) << "not a real plug-in";
+
+		VSTPlugin plugin(nullptr);
+		plugin.loadEffectFromPath(dll.string());
+		CHECK(!plugin.hasEffect());
+
+		std::filesystem::remove(dll);
+	}
 	server->Shutdown();
 
 	if (g_failures == 0) {

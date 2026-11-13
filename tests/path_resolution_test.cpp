@@ -2,9 +2,8 @@
 // tree: bare names resolve to the installed plug-in (and are written back), local paths
 // anywhere keep loading as they are, and network or relative paths never load themselves.
 //
-// There is no module binary path in this process, so loadEffectLocked() stops before
-// launching a proxy. The plug-in still counts as loaded, which is what the "update again"
-// check needs. The load generation counts the loads that were attempted.
+// loadEffectLocked() is replaced by a stand-in that pretends the proxy started, so no proxy
+// is launched. The load generation counts the loads that were attempted.
 //
 // Build with -DBUILD_TESTING=ON and run: ctest -L sl-vst --output-on-failure
 
@@ -22,6 +21,17 @@ class VSTPluginTestAccess {
 public:
 	static uint64_t loadGeneration(VSTPlugin &plugin) { return plugin.m_loadGeneration; }
 };
+
+AEffect *VSTPlugin::loadEffectLocked()
+{
+	m_effect = std::make_unique<AEffect>();
+	return m_effect.get();
+}
+
+void VSTPlugin::stopProxy()
+{
+	m_effect.reset();
+}
 
 namespace {
 
@@ -132,6 +142,8 @@ int main()
 	CHECK_EQ(resolve("\\\\host\\share\\Missing.dll"), "<not found>");
 	CHECK_EQ(resolve("..\\Missing.dll"), "<not found>");
 	CHECK_EQ(resolve("\\\\host\\share\\Foo.exe"), "<not found>");
+	CHECK_EQ(resolve("C:\\Plugins\\Foo\".dll"), "<not found>");
+	CHECK_EQ(resolve("C:\\Plugins\\Foo.dll\" 80 1 \"x.dll"), "<not found>");
 
 	// A bare name loads once and is written back as the dropdown value.
 	{

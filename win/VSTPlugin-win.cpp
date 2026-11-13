@@ -59,15 +59,24 @@ AEffect *VSTPlugin::loadEffectLocked()
 	memset(&si, NULL, sizeof(si));
 	si.cb = sizeof(si);
 
+	std::wstring proxyArguments;
+	if (!make_proxy_arguments(normalizedPath, portNumber, GetCurrentProcessId(), &proxyArguments)) {
+		blog(LOG_WARNING, "VST Plug-in: refusing to load '%s', can't pass it to the proxy", m_pluginPath.c_str());
+		m_effect = nullptr;
+		return nullptr;
+	}
+
 	m_effect = std::make_unique<AEffect>();
-	std::wstring startparams =
-		L"streamlabs_vst.exe \"" + normalizedPath + L"\" " + std::to_wstring(portNumber) + L" " + std::to_wstring(GetCurrentProcessId());
+	std::wstring startparams = L"streamlabs_vst.exe " + proxyArguments;
 
 	BOOL launched = FALSE;
 	try {
 		const char *module_path = obs_get_module_binary_path(obs_current_module());
-		if (!module_path)
+		if (!module_path) {
+			blog(LOG_ERROR, "VST Plug-in: can't find the module path to start vst server");
+			m_effect = nullptr;
 			return nullptr;
+		}
 
 		std::wstring process_path = std::filesystem::u8path(module_path).remove_filename().wstring() + L"/win-streamlabs-vst.exe";
 
