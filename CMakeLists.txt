@@ -86,6 +86,7 @@ if(APPLE)
 elseif(WIN32)
 	list(APPEND obs-vst_SOURCES
 		win/VSTPlugin-win.cpp
+		vst-path.cpp
 		${papi_proto_srcs}
 		${papi_grpc_srcs})
 
@@ -131,6 +132,7 @@ if(WIN32)
 		WIN32 proxy/win-streamlabs-vst.cpp
 		proxy/VstWindow.cpp
 		proxy/VstModule.cpp
+		vst-path.cpp
 		${papi_proto_srcs}
 		${papi_grpc_srcs}
 	)
@@ -265,6 +267,7 @@ if(WIN32 AND BUILD_TESTING)
 		tests/save_while_processing_test.cpp
 		VSTPlugin.cpp
 		win/VSTPlugin-win.cpp
+		vst-path.cpp
 		grpc_vst_communicatorClient.cpp)
 
 	target_link_libraries(sl-vst-save-while-processing-test PRIVATE
@@ -293,13 +296,50 @@ if(WIN32 AND BUILD_TESTING)
 		LABELS sl-vst
 		TIMEOUT 60
 		ENVIRONMENT_MODIFICATION "${_slvst_test_env}")
+
+	# Path validation is pure Win32 and doesn't need libobs.
+	add_executable(sl-vst-path-validation-test tests/vst_path_test.cpp vst-path.cpp)
+	target_compile_features(sl-vst-path-validation-test PRIVATE cxx_std_17)
+	set_target_properties(sl-vst-path-validation-test PROPERTIES FOLDER "Tests and Examples")
+	if(TARGET tests)
+		add_dependencies(tests sl-vst-path-validation-test)
+	endif()
+
+	add_test(NAME sl-vst-path-validation COMMAND sl-vst-path-validation-test)
+	set_tests_properties(sl-vst-path-validation PROPERTIES LABELS sl-vst TIMEOUT 60)
+
+	# Includes obs-vst.cpp to drive vst_update() with a bare plug-in name. The test supplies its own
+	# loadEffectLocked() instead of win/VSTPlugin-win.cpp, so no proxy is launched.
+	add_executable(sl-vst-path-resolution-test
+		tests/path_resolution_test.cpp
+		VSTPlugin.cpp
+		vst-path.cpp
+		grpc_vst_communicatorClient.cpp)
+
+	target_link_libraries(sl-vst-path-resolution-test PRIVATE
+		OBS::libobs
+		papi_grpc_proto
+		${_REFLECTION}
+		${_GRPC_GRPCPP}
+		${_PROTOBUF_LIBPROTOBUF})
+	target_compile_features(sl-vst-path-resolution-test PRIVATE cxx_std_17)
+	set_target_properties(sl-vst-path-resolution-test PROPERTIES FOLDER "Tests and Examples" LINK_FLAGS "/ignore:4099")
+	if(TARGET tests)
+		add_dependencies(tests sl-vst-path-resolution-test)
+	endif()
+
+	add_test(NAME sl-vst-path-resolution COMMAND sl-vst-path-resolution-test)
+	set_tests_properties(sl-vst-path-resolution PROPERTIES
+		LABELS sl-vst
+		TIMEOUT 60
+		ENVIRONMENT_MODIFICATION "${_slvst_test_env}")
 endif()
 
 # The prebuilt gRPC/protobuf (and crashpad) libraries are release-only (/MD,
 # _ITERATOR_DEBUG_LEVEL=0), so everything linking them must use the release CRT,
 # even in Debug builds, or the link fails with LNK2038.
 if(WIN32)
-	foreach(_slvst_target papi_grpc_proto obs-vst win-streamlabs-vst sl-vst-save-while-processing-test)
+	foreach(_slvst_target papi_grpc_proto obs-vst win-streamlabs-vst sl-vst-save-while-processing-test sl-vst-path-resolution-test)
 		if(TARGET ${_slvst_target})
 			set_target_properties(${_slvst_target} PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 			# OBS defines _DEBUG globally in Debug, which makes the CRT/STL headers select the debug runtime.

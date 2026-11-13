@@ -27,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <filesystem>
 
 #include "../headers/grpc_vst_communicatorClient.h"
+#include "../headers/vst-path.h"
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -43,21 +44,39 @@ AEffect *VSTPlugin::loadEffectLocked()
 	wchar_t *wpath;
 	os_utf8_to_wcs_ptr(m_pluginPath.c_str(), 0, &wpath);
 
+	std::wstring normalizedPath;
+	const bool valid = validate_vst_path(wpath, &normalizedPath);
+	bfree(wpath);
+	if (!valid) {
+		blog(LOG_WARNING, "VST Plug-in: refusing to load '%s', not a local plug-in path", m_pluginPath.c_str());
+		m_effect = nullptr;
+		return nullptr;
+	}
+
 	const int32_t portNumber = chooseProxyPort();
 
 	STARTUPINFOW si;
 	memset(&si, NULL, sizeof(si));
 	si.cb = sizeof(si);
 
+	std::wstring proxyArguments;
+	if (!make_proxy_arguments(normalizedPath, portNumber, GetCurrentProcessId(), &proxyArguments)) {
+		blog(LOG_WARNING, "VST Plug-in: refusing to load '%s', can't pass it to the proxy", m_pluginPath.c_str());
+		m_effect = nullptr;
+		return nullptr;
+	}
+
 	m_effect = std::make_unique<AEffect>();
-	std::wstring startparams =
-		L"streamlabs_vst.exe \"" + std::wstring(wpath) + L"\" " + std::to_wstring(portNumber) + L" " + std::to_wstring(GetCurrentProcessId());
+	std::wstring startparams = L"streamlabs_vst.exe " + proxyArguments;
 
 	BOOL launched = FALSE;
 	try {
 		const char *module_path = obs_get_module_binary_path(obs_current_module());
-		if (!module_path)
+		if (!module_path) {
+			blog(LOG_ERROR, "VST Plug-in: can't find the module path to start vst server");
+			m_effect = nullptr;
 			return nullptr;
+		}
 
 		std::wstring process_path = std::filesystem::u8path(module_path).remove_filename().wstring() + L"/win-streamlabs-vst.exe";
 

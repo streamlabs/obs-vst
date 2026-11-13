@@ -3,6 +3,7 @@
 
 #include "VstModule.h"
 #include "VstWindow.h"
+#include "..\headers\vst-path.h"
 
 #ifndef _DEBUG
 #include "MakeMinidump.h"
@@ -20,17 +21,13 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, PWSTR 
 	handler.start("https://sentry.io/api/6205131/minidump/?sentry_key=a9b80de8a8f74a8ba8d40abe453e699f");
 #endif
 
-	int argc = 0;
-	LPWSTR *argv = ::CommandLineToArgvW(pCmdLine, &argc);
-
-	if (argc < 3)
+	std::wstring modulePath;
+	std::wstring pipid;
+	std::wstring ownerProcessId;
+	if (!parse_proxy_arguments(pCmdLine, &modulePath, &pipid, &ownerProcessId))
 		return 0;
 
 	::timeBeginPeriod(1);
-
-	const std::wstring modulePath = argv[0];
-	const std::wstring pipid = argv[1];
-	const std::wstring ownerProcessId = argv[2];
 
 	HANDLE obs64 = OpenProcess(SYNCHRONIZE, FALSE, _wtoi(ownerProcessId.c_str()));
 
