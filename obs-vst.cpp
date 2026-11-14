@@ -445,9 +445,9 @@ static obs_properties_t *vst_properties(void *data)
 
 	fill_out_plugins(list);
 
-	obs_property_t *open_button = obs_properties_add_button(props, OPEN_VST_SETTINGS, OPEN_VST_TEXT, open_editor_button_clicked);
+	obs_property_t *open_button = obs_properties_add_button2(props, OPEN_VST_SETTINGS, OPEN_VST_TEXT, open_editor_button_clicked, data);
 
-	obs_property_t *close_button = obs_properties_add_button(props, CLOSE_VST_SETTINGS, CLOSE_VST_TEXT, close_editor_button_clicked);
+	obs_property_t *close_button = obs_properties_add_button2(props, CLOSE_VST_SETTINGS, CLOSE_VST_TEXT, close_editor_button_clicked, data);
 
 	obs_property_set_visible(open_button, true);
 	obs_property_set_visible(close_button, false);
